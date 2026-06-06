@@ -14,6 +14,8 @@ import {
   getIssueStatusClassName,
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
+import { DirectorAttentionQueue } from "@/components/director-attention-queue";
+import { getHistoryReadFailureMessage } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 
 const fieldClassName =
@@ -31,6 +33,12 @@ type IssueRecord = {
   issue_type: string;
   status: string;
   position_name: string | null;
+  created_at: string | null;
+};
+
+type IssueHistoryNote = {
+  issue_id: string;
+  note: string | null;
   created_at: string | null;
 };
 
@@ -84,6 +92,9 @@ export default function DirectorConsolePage() {
   const [issues, setIssues] = useState<IssueRecord[]>([]);
   const [isLoadingIssues, setIsLoadingIssues] = useState(true);
   const [issueLoadError, setIssueLoadError] = useState<string | null>(null);
+  const [latestIssueNotes, setLatestIssueNotes] = useState<
+    Record<string, string>
+  >({});
   const [expandedStatuses, setExpandedStatuses] = useState<Set<string>>(
     new Set(),
   );
@@ -102,7 +113,46 @@ export default function DirectorConsolePage() {
       .order("created_at", { ascending: false });
   }, [activeShow, supabase]);
 
+  const refreshLatestNotes = useCallback(
+    async (issueRecords: IssueRecord[]) => {
+      if (issueRecords.length === 0) {
+        setLatestIssueNotes({});
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("issue_status_history")
+        .select("issue_id, note, created_at")
+        .in(
+          "issue_id",
+          issueRecords.map((issue) => issue.id),
+        )
+        .eq("new_status", "retrieving_parts")
+        .not("note", "is", null)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        setIssueLoadError(getHistoryReadFailureMessage(error.message));
+        return;
+      }
+
+      const notes = ((data ?? []) as IssueHistoryNote[]).reduce<
+        Record<string, string>
+      >((latest, history) => {
+        if (history.note && !latest[history.issue_id]) {
+          latest[history.issue_id] = history.note;
+        }
+
+        return latest;
+      }, {});
+
+      setLatestIssueNotes(notes);
+    },
+    [supabase],
+  );
+
   const refreshIssues = useCallback(async () => {
+    setIssueLoadError(null);
     const { data, error } = await fetchIssues();
 
     if (error) {
@@ -110,9 +160,10 @@ export default function DirectorConsolePage() {
       return;
     }
 
-    setIssues((data ?? []) as IssueRecord[]);
-    setIssueLoadError(null);
-  }, [fetchIssues]);
+    const nextIssues = (data ?? []) as IssueRecord[];
+    setIssues(nextIssues);
+    await refreshLatestNotes(nextIssues);
+  }, [fetchIssues, refreshLatestNotes]);
 
   useEffect(() => {
     const loadInitialIssues = async () => {
@@ -122,15 +173,17 @@ export default function DirectorConsolePage() {
         setIssues([]);
         setIssueLoadError(`Could not load issue data: ${error.message}`);
       } else {
-        setIssues((data ?? []) as IssueRecord[]);
         setIssueLoadError(null);
+        const nextIssues = (data ?? []) as IssueRecord[];
+        setIssues(nextIssues);
+        await refreshLatestNotes(nextIssues);
       }
 
       setIsLoadingIssues(false);
     };
 
     void loadInitialIssues();
-  }, [fetchIssues]);
+  }, [fetchIssues, refreshLatestNotes]);
 
   const statusGroups = useMemo(() => {
     const groups = new Map<string, IssueRecord[]>();
@@ -218,7 +271,7 @@ export default function DirectorConsolePage() {
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-5 py-6 sm:px-8 lg:py-8">
+    <div className="mx-auto flex w-full max-w-[96rem] flex-col gap-6 px-5 py-6 sm:px-8 xl:pr-[21rem] lg:py-8">
       <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25">
         <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#a78bfa]">
           Director Console
@@ -461,6 +514,11 @@ export default function DirectorConsolePage() {
                                   Position: {issue.position_name}
                                 </span>
                               ) : null}
+                              {latestIssueNotes[issue.id] ? (
+                                <span className="mt-1 block text-[11px] italic text-[#aab4c3]">
+                                  Note: {latestIssueNotes[issue.id]}
+                                </span>
+                              ) : null}
                             </Link>
                           ))}
                         </div>
@@ -478,6 +536,7 @@ export default function DirectorConsolePage() {
           </aside>
         </section>
       )}
+      <DirectorAttentionQueue onIssueUpdated={refreshIssues} />
     </div>
   );
 }

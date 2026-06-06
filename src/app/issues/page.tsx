@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useActiveShow } from "@/components/active-show-strip";
 import {
@@ -20,6 +21,14 @@ type IssueRecord = {
   created_at: string | null;
 };
 
+type IssueView = "open" | "resolved" | "unfixable";
+
+const issueViews: { id: IssueView; label: string }[] = [
+  { id: "open", label: "Open" },
+  { id: "resolved", label: "Resolved" },
+  { id: "unfixable", label: "Unfixable" },
+];
+
 function formatCreatedAt(createdAt: string | null) {
   if (!createdAt) {
     return "Creation time unavailable";
@@ -37,6 +46,7 @@ export default function IssuesPage() {
   const [issues, setIssues] = useState<IssueRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<IssueView>("open");
 
   const fetchIssues = useCallback(async () => {
     if (!activeShow) {
@@ -85,6 +95,25 @@ export default function IssuesPage() {
     void loadInitialIssues();
   }, [fetchIssues]);
 
+  const visibleIssues = useMemo(() => {
+    if (activeView === "resolved") {
+      return issues.filter((issue) =>
+        ["verified_resolved", "closed"].includes(issue.status),
+      );
+    }
+
+    if (activeView === "unfixable") {
+      return issues.filter((issue) => issue.status === "unfixable");
+    }
+
+    return issues.filter(
+      (issue) =>
+        !["verified_resolved", "closed", "unfixable"].includes(
+          issue.status,
+        ),
+    );
+  }, [activeView, issues]);
+
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-5 py-6 sm:px-8 lg:py-8">
       <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25">
@@ -101,7 +130,25 @@ export default function IssuesPage() {
 
       <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-xl font-semibold text-white">Issue list</h2>
+          <div>
+            <h2 className="text-xl font-semibold text-white">Issue list</h2>
+            <div className="mt-3 flex gap-2" aria-label="Issue view">
+              {issueViews.map((view) => (
+                <button
+                  className={`rounded-md border px-3 py-2 text-sm font-semibold transition-colors ${
+                    activeView === view.id
+                      ? "border-[#8b5cf6] bg-[#4c00a4] text-white"
+                      : "border-white/10 bg-[#070b18] text-[#94a3b8] hover:text-white"
+                  }`}
+                  key={view.id}
+                  onClick={() => setActiveView(view.id)}
+                  type="button"
+                >
+                  {view.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <button
             className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-[#dbe4ef] transition-colors hover:border-[#8b5cf6] hover:text-white"
             onClick={() => void loadIssues()}
@@ -122,14 +169,15 @@ export default function IssuesPage() {
             <p className="rounded-lg border border-dashed border-[#475569] bg-[#070b18] p-5 text-sm text-[#94a3b8]">
               Loading issues from Supabase...
             </p>
-          ) : issues.length === 0 ? (
+          ) : visibleIssues.length === 0 ? (
             <p className="rounded-lg border border-dashed border-[#475569] bg-[#070b18] p-5 text-sm text-[#94a3b8]">
-              No issues found for the active show.
+              No {activeView} issues found for the active show.
             </p>
           ) : (
-            issues.map((issue) => (
-              <article
-                className="rounded-lg border border-white/10 bg-[#070b18] p-5"
+            visibleIssues.map((issue) => (
+              <Link
+                className="block rounded-lg border border-white/10 bg-[#070b18] p-5 transition-colors hover:border-[#8b5cf6]/60 hover:bg-[#0b1020]"
+                href={`/issues/${issue.id}`}
                 key={issue.id}
               >
                 <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -154,7 +202,7 @@ export default function IssuesPage() {
                     {formatIssueLabel(issue.status)}
                   </span>
                 </div>
-              </article>
+              </Link>
             ))
           )}
         </div>

@@ -1,11 +1,26 @@
 "use client";
 
-import { use, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  use,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   formatIssueLabel,
   getIssueStatusClassName,
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
+import {
+  getTemporaryTechnicianLabel,
+  setTemporaryTechnicianAssignment,
+  TEMPORARY_TECHNICIANS,
+  type TemporaryTechnicianId,
+  useTemporaryTechnicianAssignments,
+} from "@/components/temporary-technician-store";
+import { getHistoryReadFailureMessage } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 
 type IssueDetail = {
@@ -18,7 +33,11 @@ type IssueDetail = {
   effect_name: string | null;
   created_at: string | null;
   updated_at: string | null;
-  assigned_to_user_id: string | null;
+};
+
+type RetrievingPartsHistory = {
+  note: string | null;
+  created_at: string | null;
 };
 
 function formatDateTime(value: string | null) {
@@ -42,12 +61,21 @@ export default function IssueDetailPage({
   const [issue, setIssue] = useState<IssueDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [assignmentMessage, setAssignmentMessage] = useState<string | null>(
+    null,
+  );
+  const [retrievingPartsHistory, setRetrievingPartsHistory] =
+    useState<RetrievingPartsHistory | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const assignments = useTemporaryTechnicianAssignments();
+  const assignmentSelectRef = useRef<HTMLSelectElement>(null);
+  const savedAssignment = assignments[id];
 
   const fetchIssue = useCallback(async () => {
     return supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, status, position_name, effect_name, created_at, updated_at, assigned_to_user_id",
+        "id, channel_number, cue_value, issue_type, status, position_name, effect_name, created_at, updated_at",
       )
       .eq("id", id)
       .maybeSingle();
@@ -63,13 +91,46 @@ export default function IssueDetailPage({
         setErrorMessage("Issue not found.");
       } else {
         setIssue(data as IssueDetail);
+
+        const { data: noteData, error: noteError } = await supabase
+          .from("issue_status_history")
+          .select("note, created_at")
+          .eq("issue_id", id)
+          .eq("new_status", "retrieving_parts")
+          .not("note", "is", null)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (noteError) {
+          setHistoryError(getHistoryReadFailureMessage(noteError.message));
+        } else {
+          setRetrievingPartsHistory(
+            noteData as RetrievingPartsHistory | null,
+          );
+        }
       }
 
       setIsLoading(false);
     };
 
     void loadIssue();
-  }, [fetchIssue]);
+  }, [fetchIssue, id, supabase]);
+
+  const handleSaveAssignment = () => {
+    const selectedValue = assignmentSelectRef.current?.value ?? "";
+    const technicianId =
+      selectedValue === ""
+        ? null
+        : (selectedValue as TemporaryTechnicianId);
+
+    setTemporaryTechnicianAssignment(id, technicianId);
+    setAssignmentMessage(
+      technicianId
+        ? `Assignment saved locally: ${getTemporaryTechnicianLabel(technicianId)}.`
+        : "Temporary assignment cleared.",
+    );
+  };
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-5 py-6 sm:px-8 lg:py-8">
@@ -106,6 +167,79 @@ export default function IssueDetailPage({
               </span>
             </div>
 
+            <section className="rounded-lg border border-[#8b5cf6]/30 bg-[#130a2b]/70 p-5">
+              <div className="flex flex-col gap-1">
+                <h2 className="text-lg font-semibold text-white">
+                  Assigned Technician
+                </h2>
+                <p className="text-sm leading-6 text-[#b6c3d1]">
+                  Temporary MVP assignment is stored only in this browser.
+                  The database assigned technician field is not changed.
+                </p>
+              </div>
+
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+                <label className="grid flex-1 gap-2 text-sm font-semibold text-[#dbe4ef]">
+                  Technician
+                  <select
+                    key={savedAssignment ?? "unassigned"}
+                    ref={assignmentSelectRef}
+                    defaultValue={savedAssignment ?? ""}
+                    className="h-11 rounded-md border border-white/15 bg-[#070b18] px-3 text-base text-white outline-none transition focus:border-[#a78bfa] focus:ring-2 focus:ring-[#4c00a4]/40"
+                  >
+                    <option value="">Unassigned</option>
+                    {TEMPORARY_TECHNICIANS.map((technician) => (
+                      <option key={technician.id} value={technician.id}>
+                        {technician.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={handleSaveAssignment}
+                  className="h-11 rounded-md bg-[#6d28d9] px-5 text-sm font-semibold text-white transition hover:bg-[#7c3aed] focus:outline-none focus:ring-2 focus:ring-[#a78bfa] focus:ring-offset-2 focus:ring-offset-[#0b1020]"
+                >
+                  Save Assignment
+                </button>
+              </div>
+
+              {assignmentMessage ? (
+                <p className="mt-3 text-sm font-semibold text-[#c4b5fd]">
+                  {assignmentMessage}
+                </p>
+              ) : (
+                <p className="mt-3 text-xs text-[#94a3b8]">
+                  Current temporary assignment:{" "}
+                  {getTemporaryTechnicianLabel(savedAssignment)}
+                </p>
+              )}
+            </section>
+
+            <section className="rounded-lg border border-[#f59e0b]/30 bg-[#2a1c06]/55 p-5">
+              <h2 className="text-lg font-semibold text-white">
+                Latest Retrieving Parts Note
+              </h2>
+              {historyError ? (
+                <p className="mt-3 text-sm font-semibold leading-6 text-[#fde68a]">
+                  {historyError}
+                </p>
+              ) : retrievingPartsHistory?.note ? (
+                <>
+                  <p className="mt-3 text-sm italic leading-6 text-[#e2e8f0]">
+                    {retrievingPartsHistory.note}
+                  </p>
+                  <p className="mt-2 text-xs text-[#94a3b8]">
+                    {formatDateTime(retrievingPartsHistory.created_at)}
+                  </p>
+                </>
+              ) : (
+                <p className="mt-3 text-sm text-[#94a3b8]">
+                  No Retrieving Parts note has been recorded.
+                </p>
+              )}
+            </section>
+
             <dl className="grid gap-4 sm:grid-cols-2">
               <Detail label="Position" value={issue.position_name ?? "None"} />
               <Detail label="Effect" value={issue.effect_name ?? "None"} />
@@ -116,14 +250,6 @@ export default function IssueDetailPage({
               <Detail
                 label="Updated At"
                 value={formatDateTime(issue.updated_at)}
-              />
-              <Detail
-                label="Assigned Technician"
-                value={
-                  issue.assigned_to_user_id
-                    ? "Assigned technician details coming later"
-                    : "Unassigned"
-                }
               />
               <Detail
                 label="Root Cause"

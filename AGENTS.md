@@ -58,3 +58,31 @@ Script upload is Phase 2 and should not block:
 - Status transitions
 - Director verification workflow
 - Root-cause tracking
+
+## Unfixable Issue Handling
+
+Unfixable is a meaningful terminal or persistent status, not merely a dismissal.
+
+When an issue is marked unfixable, the backend should preserve:
+
+- `issues.status = unfixable`
+- The `issues.closed_at` timestamp if the issue is being closed as unfixable
+- An `issue_status_history` entry with `new_status = unfixable`
+- A required note explaining why the issue was determined unfixable
+
+Unfixable issues must remain recallable in later continuity sessions because
+they may still appear as continuity problems in the firing system.
+
+Unfixable issue data is important for after-action exports and display company
+reporting.
+
+## Director and Technician Device Guidance
+
+- Director Console is desktop/PC-first and should be optimized for rapid
+  entry, spatial consistency, and situational awareness.
+- Do not treat "no scrolling" as an absolute rule. Pages such as Issues,
+  Positions, script review, and reports may require scrolling.
+- Mobile devices are not recommended for Director workflows.
+- Mobile users should generally be routed toward Technician workflows.
+- Technician Console should remain mobile-friendly with simple,
+  touch-oriented actions.
