@@ -34,3 +34,27 @@ Do not build generic crew checklists, product sorting, rack building, or unrelat
 Use Next.js, TypeScript, Tailwind, and Supabase.
 
 Do not change database schema unless explicitly instructed.
+
+## Script Upload Roadmap
+
+### Current Status
+
+- Script upload is intentionally deferred.
+- Current scripted-show behavior relies on manual CH / Module and Cue(s) entry.
+- Position and effect resolution are placeholders for now.
+- No script parsing is implemented yet.
+
+### Future Behavior
+
+Uploaded scripts will eventually resolve:
+
+- Position
+- Effect name
+- Expected continuity state
+
+Script upload is Phase 2 and should not block:
+
+- Technician Console
+- Status transitions
+- Director verification workflow
+- Root-cause tracking
