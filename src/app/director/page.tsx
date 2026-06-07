@@ -16,6 +16,7 @@ import {
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import { DirectorAttentionQueue } from "@/components/director-attention-queue";
+import { createTemporaryHandoff } from "@/components/temporary-handoff-store";
 import {
   getContinuitySessionPolicyMessage,
   setActiveContinuitySession,
@@ -53,6 +54,8 @@ type IssueRecord = {
   issue_type: string;
   status: string;
   position_name: string | null;
+  effect_name: string | null;
+  session_id: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -240,6 +243,9 @@ export default function DirectorConsolePage() {
   const [assigningIssueId, setAssigningIssueId] = useState<string | null>(
     null,
   );
+  const [reassigningIssueId, setReassigningIssueId] = useState<
+    string | null
+  >(null);
   const [assignmentFeedback, setAssignmentFeedback] = useState<{
     type: "success" | "error";
     message: string;
@@ -280,7 +286,7 @@ export default function DirectorConsolePage() {
     return supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, status, position_name, created_at, updated_at",
+        "id, channel_number, cue_value, issue_type, status, position_name, effect_name, session_id, created_at, updated_at",
       )
       .eq("show_id", activeShow.id)
       .order("created_at", { ascending: false });
@@ -488,11 +494,20 @@ export default function DirectorConsolePage() {
         const workingIssues = activeIssues.filter(
           ({ issue }) => issue.status === "in_progress",
         );
+        const resolvedCount = issues.filter(
+          (issue) =>
+            issue.session_id === sessionForActiveShow?.id &&
+            resolvedStatuses.has(issue.status) &&
+            (technicianAssignments[issue.id] === technician.id ||
+              additionalAssignments[issue.id] === technician.id),
+        ).length;
 
         return {
           ...technician,
           activeIssues,
           currentIssue: workingIssues[0] ?? null,
+          resolvedCount,
+          workingCount: workingIssues.length,
           queueCount: activeIssues.filter(
             ({ issue }) => issue.status === "assigned",
           ).length,
@@ -502,6 +517,7 @@ export default function DirectorConsolePage() {
       additionalAssignmentTimes,
       additionalAssignments,
       issues,
+      sessionForActiveShow?.id,
       technicianAssignmentTimes,
       technicianAssignments,
     ],
@@ -571,6 +587,85 @@ export default function DirectorConsolePage() {
     );
     await refreshIssues();
     setAssigningIssueId(null);
+  };
+
+  const reassignTechnician = async (
+    issue: IssueRecord,
+    technicianId: TemporaryTechnicianId,
+  ) => {
+    if (!activeShow) {
+      return;
+    }
+
+    const originalTechnician = technicianAssignments[issue.id];
+
+    if (!originalTechnician || originalTechnician === technicianId) {
+      return;
+    }
+
+    setReassigningIssueId(issue.id);
+    setAssignmentFeedback(null);
+    setAssignmentWarning(null);
+
+    const { error: updateError } = await supabase
+      .from("issues")
+      .update({ status: "assigned" })
+      .eq("id", issue.id)
+      .eq("show_id", activeShow.id);
+
+    if (updateError) {
+      setAssignmentFeedback({
+        type: "error",
+        message: `Could not reassign technician: ${updateError.message}`,
+      });
+      setReassigningIssueId(null);
+      return;
+    }
+
+    if (issue.status !== "assigned") {
+      createTemporaryHandoff({
+        issueId: issue.id,
+        showId: activeShow.id,
+        fromTechnician: originalTechnician,
+        toTechnician: technicianId,
+        previousStatus: issue.status,
+        channelNumber: issue.channel_number,
+        cueValue: issue.cue_value,
+        issueType: issue.issue_type,
+        positionName: issue.position_name,
+        effectName: issue.effect_name,
+      });
+    }
+
+    setTemporaryTechnicianAssignment(issue.id, technicianId);
+
+    const originalLabel =
+      getTemporaryTechnicianLabel(originalTechnician);
+    const newLabel = getTemporaryTechnicianLabel(technicianId);
+    const { error: historyError } = await supabase
+      .from("issue_status_history")
+      .insert({
+        changed_by_user_id: null,
+        issue_id: issue.id,
+        new_status: "assigned",
+        note:
+          issue.status === "assigned"
+            ? `Reassigned from ${originalLabel} to ${newLabel}.`
+            : `Reassigned from ${originalLabel} to ${newLabel}. Previous status: ${formatIssueLabel(issue.status)}. Handoff notices created.`,
+        old_status: issue.status,
+      });
+
+    setAssignmentFeedback({
+      type: "success",
+      message: `${newLabel} assigned. Issue moved to In Queue.`,
+    });
+    setAssignmentWarning(
+      historyError
+        ? getHistoryWriteFailureMessage(historyError.message)
+        : null,
+    );
+    await refreshIssues();
+    setReassigningIssueId(null);
   };
 
   const openEndSessionSummary = async () => {
@@ -909,8 +1004,10 @@ export default function DirectorConsolePage() {
               loadCount={technician.activeIssues.length}
               now={timerNow}
               queueCount={technician.queueCount}
+              resolvedCount={technician.resolvedCount}
               technicianId={technician.id}
               technicianName={technician.label}
+              workingCount={technician.workingCount}
             />
           ))}
         </div>
@@ -1170,6 +1267,43 @@ export default function DirectorConsolePage() {
                                     value=""
                                   >
                                     <option value="">Assign Tech</option>
+                                    {TEMPORARY_TECHNICIANS.map(
+                                      (technician) => (
+                                        <option
+                                          key={technician.id}
+                                          value={technician.id}
+                                        >
+                                          {technician.label}
+                                        </option>
+                                      ),
+                                    )}
+                                  </select>
+                                ) : technicianAssignments[issue.id] &&
+                                  !terminalStatuses.has(status) ? (
+                                  <select
+                                    aria-label={`Reassign channel ${issue.channel_number}, cue ${issue.cue_value}`}
+                                    className="h-8 max-w-32 shrink-0 rounded-md border border-[#3b82f6]/40 bg-[#0b1b35] px-2 text-xs font-semibold text-white outline-none focus:border-[#60a5fa]"
+                                    disabled={
+                                      reassigningIssueId === issue.id
+                                    }
+                                    onChange={(event) => {
+                                      const technicianId = event.target
+                                        .value as TemporaryTechnicianId;
+
+                                      if (
+                                        technicianId !==
+                                        technicianAssignments[issue.id]
+                                      ) {
+                                        void reassignTechnician(
+                                          issue,
+                                          technicianId,
+                                        );
+                                      }
+                                    }}
+                                    value={
+                                      technicianAssignments[issue.id]
+                                    }
+                                  >
                                     {TEMPORARY_TECHNICIANS.map(
                                       (technician) => (
                                         <option
@@ -1527,8 +1661,10 @@ function TechOverviewCard({
   loadCount,
   now,
   queueCount,
+  resolvedCount,
   technicianId,
   technicianName,
+  workingCount,
 }: {
   currentIssue: {
     issue: IssueRecord;
@@ -1537,13 +1673,17 @@ function TechOverviewCard({
   loadCount: number;
   now: number | null;
   queueCount: number;
+  resolvedCount: number;
   technicianId: TemporaryTechnicianId;
   technicianName: string;
+  workingCount: number;
 }) {
   const workloadClassName =
     loadCount >= 4
       ? "border-[#ef4444]/45 bg-[#2a0b13]"
-      : loadCount >= 2
+      : workingCount > 0
+        ? "border-[#3b82f6]/45 bg-[#0b1b35]"
+        : loadCount > 0
         ? "border-[#f59e0b]/45 bg-[#2a1c06]"
         : "border-[#22c55e]/40 bg-[#082515]";
 
@@ -1558,9 +1698,12 @@ function TechOverviewCard({
         <h2 className="text-sm font-semibold text-white">
           {technicianName}
         </h2>
-        <span className="text-xs font-bold text-[#dbe4ef]">
-          Load {loadCount}
-        </span>
+        <span className="text-xs font-bold text-[#dbe4ef]">Load {loadCount}</span>
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] font-semibold text-[#dbe4ef]">
+        <span>Working {workingCount}</span>
+        <span>Queue {queueCount}</span>
+        <span>Resolved {resolvedCount}</span>
       </div>
       {currentIssue ? (
         <div className="mt-2 grid gap-1">

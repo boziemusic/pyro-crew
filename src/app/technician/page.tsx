@@ -9,6 +9,7 @@ import {
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import {
+  getTemporaryTechnicianLabel,
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
   setSelectedTemporaryTechnician,
@@ -23,6 +24,13 @@ import {
   useResolutionNoticeAcknowledgements,
 } from "@/components/resolution-notice-store";
 import {
+  acceptTemporaryHandoff,
+  acknowledgeTemporaryHandoff,
+  TEMPORARY_HANDOFF_EVENT,
+  useTemporaryHandoffs,
+  type TemporaryHandoff,
+} from "@/components/temporary-handoff-store";
+import {
   getHistoryReadFailureMessage,
   getHistoryWriteFailureMessage,
 } from "@/lib/issue-status-history";
@@ -34,6 +42,7 @@ type TechnicianIssue = {
   cue_value: string;
   issue_type: string;
   position_name: string | null;
+  effect_name: string | null;
   status: string;
   created_at: string | null;
   updated_at: string | null;
@@ -113,6 +122,7 @@ export default function TechnicianConsolePage() {
     useTemporaryAdditionalTechnicianAssignmentTimes();
   const resolutionAcknowledgements =
     useResolutionNoticeAcknowledgements();
+  const handoffs = useTemporaryHandoffs();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const selectedTechnician = useSelectedTemporaryTechnician();
   const [issues, setIssues] = useState<TechnicianIssue[]>([]);
@@ -138,6 +148,9 @@ export default function TechnicianConsolePage() {
     type: "success" | "error";
     message: string;
   } | null>(null);
+  const [handoffNotes, setHandoffNotes] = useState<Record<string, string>>(
+    {},
+  );
 
   const fetchIssues = useCallback(async () => {
     if (!activeShow) {
@@ -147,7 +160,7 @@ export default function TechnicianConsolePage() {
     return supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, position_name, status, created_at, updated_at",
+        "id, channel_number, cue_value, issue_type, position_name, effect_name, status, created_at, updated_at",
       )
       .eq("show_id", activeShow.id)
       .order("created_at", { ascending: false });
@@ -239,6 +252,20 @@ export default function TechnicianConsolePage() {
 
     void loadIssues();
   }, [fetchIssues, refreshLatestNotes]);
+
+  useEffect(() => {
+    const handleHandoffChange = () => {
+      void refreshIssues();
+    };
+
+    window.addEventListener(TEMPORARY_HANDOFF_EVENT, handleHandoffChange);
+
+    return () =>
+      window.removeEventListener(
+        TEMPORARY_HANDOFF_EVENT,
+        handleHandoffChange,
+      );
+  }, [refreshIssues]);
 
   const assignedIssues = useMemo(
     () =>
@@ -339,6 +366,26 @@ export default function TechnicianConsolePage() {
     selectedTechnician,
   ]);
 
+  const outgoingHandoffNotices = useMemo(
+    () =>
+      handoffs.filter(
+        (handoff) =>
+          handoff.fromTechnician === selectedTechnician &&
+          !handoff.outgoingAcknowledged,
+      ),
+    [handoffs, selectedTechnician],
+  );
+
+  const incomingHandoffNotices = useMemo(
+    () =>
+      handoffs.filter(
+        (handoff) =>
+          handoff.toTechnician === selectedTechnician &&
+          !handoff.incomingAccepted,
+      ),
+    [handoffs, selectedTechnician],
+  );
+
   const updateIssueStatus = async (
     issue: TechnicianIssue,
     status: string,
@@ -410,6 +457,67 @@ export default function TechnicianConsolePage() {
     setUpdatingIssueId(null);
   };
 
+  const acknowledgeHandoff = async (handoff: TemporaryHandoff) => {
+    const note = handoffNotes[handoff.id]?.trim() ?? "";
+    acknowledgeTemporaryHandoff(handoff.id, note || null);
+    setHandoffNotes((currentNotes) => {
+      const nextNotes = { ...currentNotes };
+      delete nextNotes[handoff.id];
+      return nextNotes;
+    });
+    setFeedback({
+      type: "success",
+      message: "Handoff acknowledged.",
+    });
+
+    const originalTech = TEMPORARY_TECHNICIANS.find(
+      (technician) => technician.id === handoff.fromTechnician,
+    )?.label;
+    const newTech = TEMPORARY_TECHNICIANS.find(
+      (technician) => technician.id === handoff.toTechnician,
+    )?.label;
+    const historyNote = `${originalTech} acknowledged handoff to ${newTech}.${
+      note ? ` Handoff note: ${note}` : ""
+    }`;
+    const { error } = await supabase.from("issue_status_history").insert({
+      changed_by_user_id: null,
+      issue_id: handoff.issueId,
+      new_status: "assigned",
+      note: historyNote,
+      old_status: handoff.previousStatus,
+    });
+
+    setHistoryWarning(
+      error ? getHistoryWriteFailureMessage(error.message) : null,
+    );
+  };
+
+  const acceptHandoff = async (handoff: TemporaryHandoff) => {
+    acceptTemporaryHandoff(handoff.id);
+    setFeedback({
+      type: "success",
+      message: "Handoff accepted.",
+    });
+
+    const originalTech = TEMPORARY_TECHNICIANS.find(
+      (technician) => technician.id === handoff.fromTechnician,
+    )?.label;
+    const receivingTech = TEMPORARY_TECHNICIANS.find(
+      (technician) => technician.id === handoff.toTechnician,
+    )?.label;
+    const { error } = await supabase.from("issue_status_history").insert({
+      changed_by_user_id: null,
+      issue_id: handoff.issueId,
+      new_status: "assigned",
+      note: `${receivingTech} accepted handoff from ${originalTech}.`,
+      old_status: handoff.previousStatus,
+    });
+
+    setHistoryWarning(
+      error ? getHistoryWriteFailureMessage(error.message) : null,
+    );
+  };
+
   const renderIssueCard = (issue: TechnicianIssue) => {
     const isUpdating = updatingIssueId === issue.id;
 
@@ -430,6 +538,11 @@ export default function TechnicianConsolePage() {
             <p className="text-sm text-[#94a3b8]">
               Position: {issue.position_name ?? "None"}
             </p>
+            {issue.effect_name ? (
+              <p className="text-sm text-[#94a3b8]">
+                Effect: {issue.effect_name}
+              </p>
+            ) : null}
             {latestIssueNotes[issue.id] ? (
               <p className="text-sm italic leading-6 text-[#cbd5e1]">
                 Note: {latestIssueNotes[issue.id]}
@@ -563,6 +676,140 @@ export default function TechnicianConsolePage() {
           and report operational status to the Director.
         </p>
       </section>
+
+      {outgoingHandoffNotices.length > 0 ||
+      incomingHandoffNotices.length > 0 ? (
+        <section className="rounded-lg border border-[#8b5cf6]/30 bg-[#130a2b]/80 p-5 shadow-xl shadow-black/20">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-white">
+                Handoff Notices
+              </h2>
+              <p className="mt-1 text-xs text-[#c4b5fd]">
+                Reassigned issue context requiring acknowledgement.
+              </p>
+            </div>
+            <span className="rounded-md border border-white/10 bg-[#070b18] px-2 py-1 text-xs font-bold text-[#cbd5e1]">
+              {outgoingHandoffNotices.length +
+                incomingHandoffNotices.length}
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-3">
+            {outgoingHandoffNotices.map((handoff) => (
+              <article
+                className="rounded-lg border border-[#f59e0b]/35 bg-[#2a1c06]/70 p-4"
+                key={handoff.id}
+              >
+                <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#fde68a]">
+                  Issue Reassigned
+                </p>
+                <p className="mt-2 text-sm text-[#dbe4ef]">
+                  This issue was reassigned to{" "}
+                  {getTemporaryTechnicianLabel(handoff.toTechnician)}.
+                </p>
+                <p className="mt-3 text-sm text-[#dbe4ef]">
+                  <IssueIdentifiers
+                    channelNumber={handoff.channelNumber}
+                    cueValue={handoff.cueValue}
+                    issueType={handoff.issueType}
+                  />
+                </p>
+                <p className="mt-2 text-sm text-[#cbd5e1]">
+                  Current Status:{" "}
+                  <strong>{formatIssueLabel(handoff.previousStatus)}</strong>
+                </p>
+                <p className="mt-1 text-sm text-[#cbd5e1]">
+                  Please acknowledge handoff.
+                </p>
+                <label className="mt-3 grid gap-2 text-sm font-semibold text-[#fde68a]">
+                  Optional Handoff Note
+                  <textarea
+                    className="min-h-20 resize-y rounded-md border border-white/15 bg-[#020617] p-3 text-sm text-white outline-none focus:border-[#f59e0b]"
+                    onChange={(event) =>
+                      setHandoffNotes((currentNotes) => ({
+                        ...currentNotes,
+                        [handoff.id]: event.target.value,
+                      }))
+                    }
+                    value={handoffNotes[handoff.id] ?? ""}
+                  />
+                </label>
+                <button
+                  className="mt-3 rounded-md border border-[#f59e0b]/45 bg-[#3a2507] px-3 py-2 text-xs font-bold text-[#fde68a]"
+                  onClick={() => void acknowledgeHandoff(handoff)}
+                  type="button"
+                >
+                  Acknowledge Handoff
+                </button>
+              </article>
+            ))}
+
+            {incomingHandoffNotices.map((handoff) => (
+              <article
+                className="rounded-lg border border-[#3b82f6]/35 bg-[#0b1b35]/75 p-4"
+                key={handoff.id}
+              >
+                <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#bfdbfe]">
+                  Issue Reassigned
+                </p>
+                <p className="mt-2 text-sm text-[#dbe4ef]">
+                  This issue was reassigned from{" "}
+                  {getTemporaryTechnicianLabel(handoff.fromTechnician)}.
+                </p>
+                <p className="mt-3 text-sm text-[#dbe4ef]">
+                  <IssueIdentifiers
+                    channelNumber={handoff.channelNumber}
+                    cueValue={handoff.cueValue}
+                    issueType={handoff.issueType}
+                  />
+                </p>
+                <dl className="mt-3 grid gap-2 text-sm text-[#cbd5e1] sm:grid-cols-2">
+                  <div>
+                    <dt className="text-xs uppercase text-[#64748b]">
+                      Position
+                    </dt>
+                    <dd>{handoff.positionName ?? "None"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase text-[#64748b]">
+                      Effect
+                    </dt>
+                    <dd>{handoff.effectName ?? "None"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase text-[#64748b]">
+                      Current Status
+                    </dt>
+                    <dd>{formatIssueLabel(handoff.previousStatus)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase text-[#64748b]">
+                      Handoff Note
+                    </dt>
+                    <dd>
+                      {handoff.handoffNote ??
+                        "No handoff note provided yet."}
+                    </dd>
+                  </div>
+                </dl>
+                <button
+                  className="mt-3 rounded-md border border-[#3b82f6]/45 bg-[#0b2a4d] px-3 py-2 text-xs font-bold text-[#bfdbfe]"
+                  onClick={() => void acceptHandoff(handoff)}
+                  type="button"
+                >
+                  Accept Handoff
+                </button>
+              </article>
+            ))}
+          </div>
+          {historyWarning ? (
+            <p className="mt-3 rounded-md border border-[#f59e0b]/35 bg-[#2a1c06] p-3 text-xs font-semibold leading-5 text-[#fde68a]">
+              {historyWarning}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="rounded-lg border border-[#3b82f6]/25 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
