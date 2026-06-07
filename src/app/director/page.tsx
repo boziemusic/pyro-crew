@@ -16,6 +16,7 @@ import {
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import { DirectorAttentionQueue } from "@/components/director-attention-queue";
+import { useShowPositions } from "@/components/position-store";
 import { createTemporaryHandoff } from "@/components/temporary-handoff-store";
 import {
   getContinuitySessionPolicyMessage,
@@ -208,6 +209,7 @@ function formatElapsedTime(startedAt: string | null, now: number | null) {
 export default function DirectorConsolePage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const activeShow = useActiveShow();
+  const showPositions = useShowPositions(activeShow?.id);
   const activeSession = useActiveContinuitySession();
   const sessionForActiveShow =
     activeSession?.show_id === activeShow?.id ? activeSession : null;
@@ -223,6 +225,7 @@ export default function DirectorConsolePage() {
   const [channelNumber, setChannelNumber] = useState("");
   const [cueValue, setCueValue] = useState("");
   const [positionName, setPositionName] = useState("");
+  const [selectedPositionId, setSelectedPositionId] = useState("");
   const [issueType, setIssueType] = useState<IssueType | "">("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdIssue, setCreatedIssue] =
@@ -269,6 +272,13 @@ export default function DirectorConsolePage() {
   const [sessionSummaryWarning, setSessionSummaryWarning] = useState<
     string | null
   >(null);
+  const positionGroupNames = useMemo(
+    () =>
+      new Map(
+        showPositions.groups.map((group) => [group.id, group.name]),
+      ),
+    [showPositions.groups],
+  );
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -915,6 +925,14 @@ export default function DirectorConsolePage() {
 
     setIsSubmitting(true);
 
+    const selectedPosition = showPositions.positions.find(
+      (position) => position.id === selectedPositionId,
+    );
+    const submittedPositionName =
+      selectedPosition?.name ?? (isManual ? positionName.trim() : "");
+
+    // TODO(script parsing): when parsed script data exists, its derived
+    // position should supersede any manual position dropdown selection.
     const insertValues = {
       assigned_to_user_id: null,
       channel_number: Number(channelNumber),
@@ -926,8 +944,8 @@ export default function DirectorConsolePage() {
       session_id: sessionForActiveShow?.id ?? null,
       show_id: activeShow.id,
       status: "new",
-      ...(isManual && positionName.trim()
-        ? { position_name: positionName.trim() }
+      ...(submittedPositionName
+        ? { position_name: submittedPositionName }
         : {}),
     };
 
@@ -944,6 +962,7 @@ export default function DirectorConsolePage() {
       setChannelNumber("");
       setCueValue("");
       setPositionName("");
+      setSelectedPositionId("");
       setIssueType("");
       await refreshIssues();
     }
@@ -1046,7 +1065,9 @@ export default function DirectorConsolePage() {
             <div className="mt-6 grid gap-5">
               <div
                 className={`grid gap-4 ${
-                  isManual ? "sm:grid-cols-2 xl:grid-cols-4" : "sm:grid-cols-3"
+                  isManual || showPositions.positions.length > 0
+                    ? "sm:grid-cols-2 xl:grid-cols-4"
+                    : "sm:grid-cols-3"
                 }`}
               >
                 <label className="flex flex-col gap-2">
@@ -1075,7 +1096,31 @@ export default function DirectorConsolePage() {
                     value={cueValue}
                   />
                 </label>
-                {isManual ? (
+                {showPositions.positions.length > 0 ? (
+                  <label className="flex flex-col gap-2">
+                    <span className="text-sm font-semibold text-[#dbe4ef]">
+                      Position
+                    </span>
+                    <select
+                      className={fieldClassName}
+                      onChange={(event) =>
+                        setSelectedPositionId(event.target.value)
+                      }
+                      value={selectedPositionId}
+                    >
+                      <option value="">No position / leave blank</option>
+                      {showPositions.positions.map((position) => (
+                        <option key={position.id} value={position.id}>
+                          {position.groupId
+                            ? positionGroupNames.get(position.groupId) ??
+                              "Ungrouped"
+                            : "Ungrouped"}{" "}
+                          / {position.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : isManual ? (
                   <label className="flex flex-col gap-2">
                     <span className="text-sm font-semibold text-[#dbe4ef]">
                       Position
