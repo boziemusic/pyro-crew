@@ -1,7 +1,8 @@
 "use client";
 
 import {
-  FormEvent,
+  type FormEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -16,7 +17,13 @@ import {
 } from "@/components/issue-identifiers";
 import { DirectorAttentionQueue } from "@/components/director-attention-queue";
 import {
+  getContinuitySessionPolicyMessage,
+  setActiveContinuitySession,
+  useActiveContinuitySession,
+} from "@/components/active-continuity-session";
+import {
   getTemporaryTechnicianLabel,
+  setSelectedTemporaryTechnician,
   setTemporaryTechnicianAssignment,
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
@@ -52,8 +59,39 @@ type IssueRecord = {
 
 type IssueHistoryNote = {
   issue_id: string;
+  new_status: string;
   note: string | null;
   created_at: string | null;
+};
+
+type SessionSummaryHistory = {
+  issue_id: string;
+  new_status: string;
+  created_at: string | null;
+};
+
+type TechnicianPerformance = {
+  technicianId: TemporaryTechnicianId;
+  technicianName: string;
+  totalAssigned: number;
+  resolved: number;
+  unfixable: number;
+  averageCompletionMs: number | null;
+};
+
+type EndSessionSummary = {
+  proposedEndAt: string;
+  totalTechnicians: number;
+  totalIssues: number;
+  resolvedIssues: number;
+  unfixableIssues: number;
+  openIssues: number;
+  issuesRequiringParts: number;
+  directorAssistanceRequests: number;
+  additionalTechnicianRequests: number;
+  averageAssignmentMs: number | null;
+  averageDirectorResponseMs: number | null;
+  technicianPerformance: TechnicianPerformance[];
 };
 
 type CreatedIssueFeedback = {
@@ -96,6 +134,56 @@ const terminalStatuses = new Set([
   "unfixable",
 ]);
 
+const attentionStatuses = new Set([
+  "awaiting_verification",
+  "director_assistance_requested",
+  "additional_technician_requested",
+]);
+
+const resolvedStatuses = new Set(["verified_resolved", "closed"]);
+
+function getTimestampValue(value: string | null | undefined) {
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) {
+    return "Unavailable";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "medium",
+  }).format(new Date(value));
+}
+
+function formatDuration(durationMs: number | null) {
+  if (durationMs === null) {
+    return "Unavailable";
+  }
+
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return [hours, minutes, seconds]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+}
+
+function getAverageDuration(durations: number[]) {
+  if (durations.length === 0) {
+    return null;
+  }
+
+  return (
+    durations.reduce((total, duration) => total + duration, 0) /
+    durations.length
+  );
+}
+
 function formatElapsedTime(startedAt: string | null, now: number | null) {
   if (!startedAt || now === null) {
     return "Starting...";
@@ -117,6 +205,9 @@ function formatElapsedTime(startedAt: string | null, now: number | null) {
 export default function DirectorConsolePage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const activeShow = useActiveShow();
+  const activeSession = useActiveContinuitySession();
+  const sessionForActiveShow =
+    activeSession?.show_id === activeShow?.id ? activeSession : null;
   const technicianAssignments = useTemporaryTechnicianAssignments();
   const technicianAssignmentTimes =
     useTemporaryTechnicianAssignmentTimes();
@@ -140,6 +231,9 @@ export default function DirectorConsolePage() {
   const [latestIssueNotes, setLatestIssueNotes] = useState<
     Record<string, string>
   >({});
+  const [currentStatusEnteredAt, setCurrentStatusEnteredAt] = useState<
+    Record<string, string>
+  >({});
   const [expandedStatuses, setExpandedStatuses] = useState<Set<string>>(
     new Set(),
   );
@@ -154,6 +248,21 @@ export default function DirectorConsolePage() {
     null,
   );
   const [timerNow, setTimerNow] = useState<number | null>(null);
+  const [endSessionStep, setEndSessionStep] = useState<
+    "confirm" | "summary" | null
+  >(null);
+  const [isEndingSession, setIsEndingSession] = useState(false);
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
+  const [endSessionSummary, setEndSessionSummary] =
+    useState<EndSessionSummary | null>(null);
+  const [isLoadingSessionSummary, setIsLoadingSessionSummary] =
+    useState(false);
+  const [sessionSummaryError, setSessionSummaryError] = useState<
+    string | null
+  >(null);
+  const [sessionSummaryWarning, setSessionSummaryWarning] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -181,18 +290,17 @@ export default function DirectorConsolePage() {
     async (issueRecords: IssueRecord[]) => {
       if (issueRecords.length === 0) {
         setLatestIssueNotes({});
+        setCurrentStatusEnteredAt({});
         return;
       }
 
       const { data, error } = await supabase
         .from("issue_status_history")
-        .select("issue_id, note, created_at")
+        .select("issue_id, new_status, note, created_at")
         .in(
           "issue_id",
           issueRecords.map((issue) => issue.id),
         )
-        .eq("new_status", "retrieving_parts")
-        .not("note", "is", null)
         .order("created_at", { ascending: false });
 
       if (error) {
@@ -200,17 +308,28 @@ export default function DirectorConsolePage() {
         return;
       }
 
-      const notes = ((data ?? []) as IssueHistoryNote[]).reduce<
-        Record<string, string>
-      >((latest, history) => {
-        if (history.note && !latest[history.issue_id]) {
-          latest[history.issue_id] = history.note;
+      const issueStatuses = new Map(
+        issueRecords.map((issue) => [issue.id, issue.status]),
+      );
+      const notes: Record<string, string> = {};
+      const statusEnteredAt: Record<string, string> = {};
+
+      for (const history of (data ?? []) as IssueHistoryNote[]) {
+        if (history.note?.trim() && !notes[history.issue_id]) {
+          notes[history.issue_id] = history.note;
         }
 
-        return latest;
-      }, {});
+        if (
+          history.created_at &&
+          history.new_status === issueStatuses.get(history.issue_id) &&
+          !statusEnteredAt[history.issue_id]
+        ) {
+          statusEnteredAt[history.issue_id] = history.created_at;
+        }
+      }
 
       setLatestIssueNotes(notes);
+      setCurrentStatusEnteredAt(statusEnteredAt);
     },
     [supabase],
   );
@@ -257,9 +376,76 @@ export default function DirectorConsolePage() {
     });
 
     return statusOrder
-      .map((status) => ({ issues: groups.get(status) ?? [], status }))
+      .map((status) => {
+        const statusIssues = [...(groups.get(status) ?? [])].sort(
+          (left, right) => {
+            if (status === "new") {
+              return (
+                getTimestampValue(left.created_at) -
+                getTimestampValue(right.created_at)
+              );
+            }
+
+            if (status === "assigned") {
+              const leftTime =
+                technicianAssignmentTimes[left.id] ??
+                left.updated_at ??
+                left.created_at;
+              const rightTime =
+                technicianAssignmentTimes[right.id] ??
+                right.updated_at ??
+                right.created_at;
+
+              return (
+                getTimestampValue(leftTime) -
+                getTimestampValue(rightTime)
+              );
+            }
+
+            if (status === "in_progress") {
+              const leftTime =
+                currentStatusEnteredAt[left.id] ??
+                left.updated_at ??
+                left.created_at;
+              const rightTime =
+                currentStatusEnteredAt[right.id] ??
+                right.updated_at ??
+                right.created_at;
+
+              return (
+                getTimestampValue(rightTime) -
+                getTimestampValue(leftTime)
+              );
+            }
+
+            if (attentionStatuses.has(status)) {
+              const leftTime =
+                currentStatusEnteredAt[left.id] ??
+                left.updated_at ??
+                left.created_at;
+              const rightTime =
+                currentStatusEnteredAt[right.id] ??
+                right.updated_at ??
+                right.created_at;
+
+              return (
+                getTimestampValue(leftTime) -
+                getTimestampValue(rightTime)
+              );
+            }
+
+            return 0;
+          },
+        );
+
+        return { issues: statusIssues, status };
+      })
       .filter(({ issues: statusIssues }) => statusIssues.length > 0);
-  }, [issues]);
+  }, [
+    currentStatusEnteredAt,
+    issues,
+    technicianAssignmentTimes,
+  ]);
 
   const latestIssue = issues[0] ?? null;
 
@@ -283,7 +469,9 @@ export default function DirectorConsolePage() {
             return {
               issue,
               assignedAt:
-                assignedAt ?? issue.updated_at ?? issue.created_at,
+                issue.status === "in_progress"
+                  ? issue.updated_at ?? assignedAt ?? issue.created_at
+                  : assignedAt ?? issue.updated_at ?? issue.created_at,
             };
           })
           .sort((left, right) => {
@@ -297,10 +485,17 @@ export default function DirectorConsolePage() {
             return leftTime - rightTime;
           });
 
+        const workingIssues = activeIssues.filter(
+          ({ issue }) => issue.status === "in_progress",
+        );
+
         return {
           ...technician,
           activeIssues,
-          currentIssue: activeIssues[0] ?? null,
+          currentIssue: workingIssues[0] ?? null,
+          queueCount: activeIssues.filter(
+            ({ issue }) => issue.status === "assigned",
+          ).length,
         };
       }),
     [
@@ -340,7 +535,7 @@ export default function DirectorConsolePage() {
 
     const { error: updateError } = await supabase
       .from("issues")
-      .update({ status: "in_progress" })
+      .update({ status: "assigned" })
       .eq("id", issue.id)
       .eq("show_id", activeShow.id);
 
@@ -360,14 +555,14 @@ export default function DirectorConsolePage() {
       .insert({
         changed_by_user_id: null,
         issue_id: issue.id,
-        new_status: "in_progress",
-        note: null,
+        new_status: "assigned",
+        note: `Assigned to ${getTemporaryTechnicianLabel(technicianId)} and placed In Queue (temporary MVP assignment).`,
         old_status: issue.status,
       });
 
     setAssignmentFeedback({
       type: "success",
-      message: `${getTemporaryTechnicianLabel(technicianId)} assigned. Issue moved to Working.`,
+      message: `${getTemporaryTechnicianLabel(technicianId)} assigned. Issue moved to In Queue.`,
     });
     setAssignmentWarning(
       historyError
@@ -376,6 +571,232 @@ export default function DirectorConsolePage() {
     );
     await refreshIssues();
     setAssigningIssueId(null);
+  };
+
+  const openEndSessionSummary = async () => {
+    if (!sessionForActiveShow) {
+      return;
+    }
+
+    const proposedEndAt = new Date().toISOString();
+    setEndSessionStep("summary");
+    setEndSessionSummary(null);
+    setSessionSummaryError(null);
+    setSessionSummaryWarning(null);
+    setSessionMessage(null);
+    setIsLoadingSessionSummary(true);
+
+    const { data: sessionIssuesData, error: issuesError } = await supabase
+      .from("issues")
+      .select(
+        "id, channel_number, cue_value, issue_type, status, position_name, created_at, updated_at",
+      )
+      .eq("session_id", sessionForActiveShow.id);
+
+    if (issuesError) {
+      setSessionSummaryError(
+        `Could not load session issues: ${issuesError.message}`,
+      );
+      setIsLoadingSessionSummary(false);
+      return;
+    }
+
+    const sessionIssues = (sessionIssuesData ?? []) as IssueRecord[];
+    const issueIds = sessionIssues.map((issue) => issue.id);
+    let historyRecords: SessionSummaryHistory[] = [];
+
+    if (issueIds.length > 0) {
+      const { data: historyData, error: historyError } = await supabase
+        .from("issue_status_history")
+        .select("issue_id, new_status, created_at")
+        .in("issue_id", issueIds)
+        .order("created_at", { ascending: true });
+
+      if (historyError) {
+        setSessionSummaryWarning(
+          getHistoryReadFailureMessage(historyError.message),
+        );
+      } else {
+        historyRecords = (historyData ?? []) as SessionSummaryHistory[];
+      }
+    }
+
+    const historyByIssue = new Map<string, SessionSummaryHistory[]>();
+
+    for (const history of historyRecords) {
+      historyByIssue.set(history.issue_id, [
+        ...(historyByIssue.get(history.issue_id) ?? []),
+        history,
+      ]);
+    }
+
+    const issueEnteredStatus = (issue: IssueRecord, status: string) =>
+      issue.status === status ||
+      (historyByIssue.get(issue.id) ?? []).some(
+        (history) => history.new_status === status,
+      );
+
+    const averageAssignmentMs = getAverageDuration(
+      sessionIssues.flatMap((issue) => {
+        const assignedHistory = (historyByIssue.get(issue.id) ?? []).find(
+          (history) =>
+            history.new_status === "assigned" && history.created_at,
+        );
+        const createdAt = getTimestampValue(issue.created_at);
+        const assignedAt = getTimestampValue(assignedHistory?.created_at);
+
+        return createdAt > 0 && assignedAt >= createdAt
+          ? [assignedAt - createdAt]
+          : [];
+      }),
+    );
+
+    const directorResponseDurations: number[] = [];
+
+    for (const issue of sessionIssues) {
+      const issueHistory = historyByIssue.get(issue.id) ?? [];
+
+      issueHistory.forEach((history, index) => {
+        if (!attentionStatuses.has(history.new_status)) {
+          return;
+        }
+
+        const enteredAt = getTimestampValue(history.created_at);
+        const responseAt = getTimestampValue(
+          issueHistory
+            .slice(index + 1)
+            .find(
+              (nextHistory) =>
+                nextHistory.new_status !== history.new_status &&
+                nextHistory.created_at,
+            )?.created_at,
+        );
+
+        if (enteredAt > 0 && responseAt >= enteredAt) {
+          directorResponseDurations.push(responseAt - enteredAt);
+        }
+      });
+    }
+
+    const involvedTechnicians = TEMPORARY_TECHNICIANS.filter(
+      (technician) =>
+        sessionIssues.some(
+          (issue) =>
+            technicianAssignments[issue.id] === technician.id ||
+            additionalAssignments[issue.id] === technician.id,
+        ),
+    );
+
+    const technicianPerformance = involvedTechnicians.map((technician) => {
+      const assignedIssues = sessionIssues.filter(
+        (issue) =>
+          technicianAssignments[issue.id] === technician.id ||
+          additionalAssignments[issue.id] === technician.id,
+      );
+      const completionDurations = assignedIssues.flatMap((issue) => {
+        const isPrimary =
+          technicianAssignments[issue.id] === technician.id;
+        const assignedAt = getTimestampValue(
+          isPrimary
+            ? technicianAssignmentTimes[issue.id]
+            : additionalAssignmentTimes[issue.id],
+        );
+        const completedAt = getTimestampValue(
+          (historyByIssue.get(issue.id) ?? []).find(
+            (history) =>
+              terminalStatuses.has(history.new_status) &&
+              history.created_at &&
+              getTimestampValue(history.created_at) >= assignedAt,
+          )?.created_at,
+        );
+
+        return assignedAt > 0 && completedAt >= assignedAt
+          ? [completedAt - assignedAt]
+          : [];
+      });
+
+      return {
+        technicianId: technician.id,
+        technicianName: technician.label,
+        totalAssigned: assignedIssues.length,
+        resolved: assignedIssues.filter((issue) =>
+          resolvedStatuses.has(issue.status),
+        ).length,
+        unfixable: assignedIssues.filter(
+          (issue) => issue.status === "unfixable",
+        ).length,
+        averageCompletionMs: getAverageDuration(completionDurations),
+      };
+    });
+
+    setEndSessionSummary({
+      proposedEndAt,
+      totalTechnicians: involvedTechnicians.length,
+      totalIssues: sessionIssues.length,
+      resolvedIssues: sessionIssues.filter((issue) =>
+        resolvedStatuses.has(issue.status),
+      ).length,
+      unfixableIssues: sessionIssues.filter(
+        (issue) => issue.status === "unfixable",
+      ).length,
+      openIssues: sessionIssues.filter(
+        (issue) => !terminalStatuses.has(issue.status),
+      ).length,
+      issuesRequiringParts: sessionIssues.filter((issue) =>
+        issueEnteredStatus(issue, "retrieving_parts"),
+      ).length,
+      directorAssistanceRequests: sessionIssues.filter((issue) =>
+        issueEnteredStatus(issue, "director_assistance_requested"),
+      ).length,
+      additionalTechnicianRequests: sessionIssues.filter((issue) =>
+        issueEnteredStatus(issue, "additional_technician_requested"),
+      ).length,
+      averageAssignmentMs,
+      averageDirectorResponseMs: getAverageDuration(
+        directorResponseDurations,
+      ),
+      technicianPerformance,
+    });
+    setIsLoadingSessionSummary(false);
+
+    // TODO(saved user reports): persist finalized session summaries per user.
+    // TODO(downloadable one-page printable report): generate a compact printable export.
+    // TODO(director report): add a dedicated Director performance report.
+    // TODO(technician report): add per-technician performance reports.
+  };
+
+  const handleEndSession = async () => {
+    if (!sessionForActiveShow) {
+      return;
+    }
+
+    setIsEndingSession(true);
+    setSessionMessage(null);
+
+    const { error } = await supabase
+      .from("continuity_sessions")
+      .update({
+        ended_at: new Date().toISOString(),
+        ended_by_user_id: null,
+        status: "ended",
+      })
+      .eq("id", sessionForActiveShow.id)
+      .eq("show_id", sessionForActiveShow.show_id);
+
+    if (error) {
+      setSessionMessage(
+        getContinuitySessionPolicyMessage(
+          `Could not end continuity session: ${error.message}.`,
+        ),
+      );
+    } else {
+      setActiveContinuitySession(null);
+      setEndSessionStep(null);
+      setEndSessionSummary(null);
+      setSessionMessage("Continuity session ended.");
+    }
+
+    setIsEndingSession(false);
   };
 
   const handleSubmitIssue = async (event: FormEvent<HTMLFormElement>) => {
@@ -407,7 +828,7 @@ export default function DirectorConsolePage() {
       effect_name: null,
       issue_source: "manual_director_entry",
       issue_type: issueType,
-      session_id: null,
+      session_id: sessionForActiveShow?.id ?? null,
       show_id: activeShow.id,
       status: "new",
       ...(isManual && positionName.trim()
@@ -447,9 +868,38 @@ export default function DirectorConsolePage() {
               Tech Overview
             </h1>
           </div>
-          <p className="text-xs text-[#94a3b8]">
-            Open assigned workload
-          </p>
+          <div className="flex flex-col items-start gap-2 sm:items-end">
+            <div className="flex items-center gap-3">
+              <div className="text-right">
+                <p className="text-[11px] uppercase tracking-[0.14em] text-[#94a3b8]">
+                  Total Time In Continuity Checks
+                </p>
+                <p className="font-mono text-lg font-semibold text-white">
+                  {sessionForActiveShow
+                    ? formatElapsedTime(
+                        sessionForActiveShow.started_at,
+                        timerNow,
+                      )
+                    : "00:00:00"}
+                </p>
+              </div>
+              {sessionForActiveShow ? (
+                <button
+                  className="rounded-md border border-[#ef4444]/45 bg-[#2a0b13] px-3 py-2 text-xs font-semibold text-[#fecaca]"
+                  onClick={() => {
+                    setSessionMessage(null);
+                    setEndSessionStep("confirm");
+                  }}
+                  type="button"
+                >
+                  End Session
+                </button>
+              ) : null}
+            </div>
+            <p className="text-xs text-[#94a3b8]">
+              {sessionForActiveShow?.name ?? "No active continuity session"}
+            </p>
+          </div>
         </div>
         <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
           {technicianOverview.map((technician) => (
@@ -458,6 +908,8 @@ export default function DirectorConsolePage() {
               key={technician.id}
               loadCount={technician.activeIssues.length}
               now={timerNow}
+              queueCount={technician.queueCount}
+              technicianId={technician.id}
               technicianName={technician.label}
             />
           ))}
@@ -576,6 +1028,12 @@ export default function DirectorConsolePage() {
               {errorMessage ? (
                 <p className="rounded-lg border border-[#ef4444]/40 bg-[#2a0b13] p-3 text-sm font-semibold text-[#fecaca]">
                   {errorMessage}
+                </p>
+              ) : null}
+              {!sessionForActiveShow ? (
+                <p className="rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-sm font-semibold text-[#fde68a]">
+                  Warning: no continuity session is active. This issue will be
+                  created without a session.
                 </p>
               ) : null}
 
@@ -775,6 +1233,291 @@ export default function DirectorConsolePage() {
         </section>
       )}
       <DirectorAttentionQueue onIssueUpdated={refreshIssues} />
+      {endSessionStep === "confirm" && sessionForActiveShow ? (
+        <div
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-5"
+          role="dialog"
+        >
+          <div className="w-full max-w-md rounded-lg border border-white/10 bg-[#0b1020] p-6 shadow-2xl shadow-black/50">
+            <h2 className="text-xl font-semibold text-white">
+              Are you sure you want to end this continuity session?
+            </h2>
+            <p className="mt-3 text-sm italic text-[#b6c3d1]">
+              {sessionForActiveShow.name}
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                className="rounded-md border border-white/15 px-4 py-2 text-sm font-semibold text-[#cbd5e1]"
+                onClick={() => setEndSessionStep(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-md bg-[#6d28d9] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#7c3aed]"
+                onClick={() => void openEndSessionSummary()}
+                type="button"
+              >
+                Yes, Review Summary
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {endSessionStep === "summary" && sessionForActiveShow ? (
+        <div
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 sm:p-6"
+          role="dialog"
+        >
+          <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-lg border border-white/10 bg-[#0b1020] shadow-2xl shadow-black/50">
+            <header className="border-b border-white/10 px-5 py-4 sm:px-7">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#a78bfa]">
+                End Session Summary Report
+              </p>
+              <h2 className="mt-1 text-xl font-semibold text-white">
+                Continuity session performance
+              </h2>
+            </header>
+
+            <div className="px-5 py-4 sm:px-7">
+              {isLoadingSessionSummary ? (
+                <p className="py-10 text-center text-sm text-[#94a3b8]">
+                  Building session summary...
+                </p>
+              ) : sessionSummaryError ? (
+                <p className="border-y border-[#ef4444]/35 py-4 text-sm font-semibold text-[#fecaca]">
+                  {sessionSummaryError}
+                </p>
+              ) : endSessionSummary ? (
+                <div className="grid gap-5">
+                  <ReportSection title="Session Summary">
+                    <ReportRow
+                      label="Show"
+                      value={activeShow?.name ?? "Unavailable"}
+                    />
+                    <ReportRow
+                      label="Session"
+                      value={sessionForActiveShow.name}
+                    />
+                    <ReportRow
+                      label="Start"
+                      value={formatDateTime(
+                        sessionForActiveShow.started_at,
+                      )}
+                    />
+                    <ReportRow
+                      label="End"
+                      value={formatDateTime(
+                        endSessionSummary.proposedEndAt,
+                      )}
+                    />
+                    <ReportRow
+                      label="Session Duration"
+                      value={formatDuration(
+                        getTimestampValue(
+                          endSessionSummary.proposedEndAt,
+                        ) -
+                          getTimestampValue(
+                            sessionForActiveShow.started_at,
+                          ),
+                      )}
+                    />
+                    <ReportRow
+                      label="Total Technicians"
+                      value={String(endSessionSummary.totalTechnicians)}
+                    />
+                  </ReportSection>
+
+                  <ReportSection title="Issue Summary">
+                    <ReportRow
+                      label="Total Issues"
+                      value={String(endSessionSummary.totalIssues)}
+                    />
+                    <ReportRow
+                      label="Open"
+                      value={String(endSessionSummary.openIssues)}
+                    />
+                    <ReportRow
+                      label="Resolved"
+                      value={String(endSessionSummary.resolvedIssues)}
+                    />
+                    <ReportRow
+                      label="Unfixable"
+                      value={String(endSessionSummary.unfixableIssues)}
+                    />
+                    <ReportRow
+                      label="Required Parts"
+                      value={String(
+                        endSessionSummary.issuesRequiringParts,
+                      )}
+                    />
+                    <ReportRow
+                      label="Director Assistance"
+                      value={String(
+                        endSessionSummary.directorAssistanceRequests,
+                      )}
+                    />
+                    <ReportRow
+                      label="Additional Tech Requested"
+                      value={String(
+                        endSessionSummary.additionalTechnicianRequests,
+                      )}
+                    />
+                  </ReportSection>
+
+                  <ReportSection title="Director Performance">
+                    <ReportRow
+                      label="Average Assignment Time"
+                      value={formatDuration(
+                        endSessionSummary.averageAssignmentMs,
+                      )}
+                    />
+                    <ReportRow
+                      label="Average Director Response Time"
+                      value={formatDuration(
+                        endSessionSummary.averageDirectorResponseMs,
+                      )}
+                    />
+                  </ReportSection>
+
+                  <section>
+                    <h3 className="border-b border-white/15 pb-2 text-sm font-semibold uppercase tracking-[0.12em] text-[#d8c8ff]">
+                      Technician Performance
+                    </h3>
+                    {endSessionSummary.technicianPerformance.length ===
+                    0 ? (
+                      <p className="py-3 text-sm text-[#94a3b8]">
+                        No temporary technician assignments were recorded for
+                        this session.
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[38rem] text-left text-sm">
+                          <thead className="border-b border-white/10 text-xs uppercase text-[#94a3b8]">
+                            <tr>
+                              <th className="py-2 pr-4 font-semibold">
+                                Tech Name
+                              </th>
+                              <th className="px-3 py-2 text-right font-semibold">
+                                Assigned
+                              </th>
+                              <th className="px-3 py-2 text-right font-semibold">
+                                Resolved
+                              </th>
+                              <th className="px-3 py-2 text-right font-semibold">
+                                Unfixable
+                              </th>
+                              <th className="py-2 pl-4 text-right font-semibold">
+                                Avg Completion
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/10 text-[#dbe4ef]">
+                            {endSessionSummary.technicianPerformance.map(
+                              (technician) => (
+                                <tr key={technician.technicianId}>
+                                  <td className="py-2.5 pr-4 font-semibold text-white">
+                                    {technician.technicianName}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-right">
+                                    {technician.totalAssigned}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-right">
+                                    {technician.resolved}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-right">
+                                    {technician.unfixable}
+                                  </td>
+                                  <td className="py-2.5 pl-4 text-right">
+                                    {formatDuration(
+                                      technician.averageCompletionMs,
+                                    )}
+                                  </td>
+                                </tr>
+                              ),
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </section>
+                </div>
+              ) : null}
+
+              {sessionSummaryWarning ? (
+                <p className="mt-4 border-t border-[#f59e0b]/30 pt-3 text-xs font-semibold leading-5 text-[#fde68a]">
+                  {sessionSummaryWarning}
+                </p>
+              ) : null}
+              {sessionMessage ? (
+                <p className="mt-4 border-t border-[#ef4444]/30 pt-3 text-xs font-semibold leading-5 text-[#fecaca]">
+                  {sessionMessage}
+                </p>
+              ) : null}
+              <p className="mt-4 border-t border-white/10 pt-3 text-xs italic leading-5 text-[#94a3b8]">
+                Performance averages appear only when reliable history
+                timestamps are available. This report is not saved or exported.
+              </p>
+            </div>
+
+            <footer className="flex justify-end gap-3 border-t border-white/10 px-5 py-4 sm:px-7">
+              <button
+                className="rounded-md border border-white/15 px-4 py-2 text-sm font-semibold text-[#cbd5e1]"
+                disabled={isEndingSession}
+                onClick={() => setEndSessionStep("confirm")}
+                type="button"
+              >
+                Cancel / Back
+              </button>
+              <button
+                className="rounded-md bg-[#b91c1c] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                disabled={
+                  isEndingSession ||
+                  isLoadingSessionSummary ||
+                  Boolean(sessionSummaryError)
+                }
+                onClick={() => void handleEndSession()}
+                type="button"
+              >
+                {isEndingSession ? "Ending..." : "End Session"}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+      {endSessionStep === null && sessionMessage ? (
+        <p className="fixed bottom-5 left-1/2 z-40 -translate-x-1/2 rounded-lg border border-white/10 bg-[#111827] px-4 py-3 text-sm font-semibold text-[#dbe4ef] shadow-xl">
+          {sessionMessage}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ReportSection({
+  children,
+  title,
+}: {
+  children: ReactNode;
+  title: string;
+}) {
+  return (
+    <section>
+      <h3 className="border-b border-white/15 pb-2 text-sm font-semibold uppercase tracking-[0.12em] text-[#d8c8ff]">
+        {title}
+      </h3>
+      <dl className="divide-y divide-white/10">{children}</dl>
+    </section>
+  );
+}
+
+function ReportRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_minmax(8rem,1.35fr)] gap-4 py-2 text-sm">
+      <dt className="text-[#94a3b8]">{label}:</dt>
+      <dd className="text-right font-semibold text-[#f8fafc]">{value}</dd>
     </div>
   );
 }
@@ -783,6 +1526,8 @@ function TechOverviewCard({
   currentIssue,
   loadCount,
   now,
+  queueCount,
+  technicianId,
   technicianName,
 }: {
   currentIssue: {
@@ -791,6 +1536,8 @@ function TechOverviewCard({
   } | null;
   loadCount: number;
   now: number | null;
+  queueCount: number;
+  technicianId: TemporaryTechnicianId;
   technicianName: string;
 }) {
   const workloadClassName =
@@ -801,7 +1548,12 @@ function TechOverviewCard({
         : "border-[#22c55e]/40 bg-[#082515]";
 
   return (
-    <article className={`rounded-lg border p-3 ${workloadClassName}`}>
+    <Link
+      aria-label={`Open Technician Console as ${technicianName}`}
+      className={`block cursor-pointer rounded-lg border p-3 transition duration-150 hover:brightness-110 hover:shadow-[0_0_18px_rgba(167,139,250,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a78bfa] ${workloadClassName}`}
+      href="/technician"
+      onClick={() => setSelectedTemporaryTechnician(technicianId)}
+    >
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-white">
           {technicianName}
@@ -824,8 +1576,10 @@ function TechOverviewCard({
           </p>
         </div>
       ) : (
-        <p className="mt-2 text-xs text-[#94a3b8]">No active issue</p>
+        <p className="mt-2 text-xs text-[#94a3b8]">
+          {queueCount > 0 ? `In Queue: ${queueCount}` : "No active issue"}
+        </p>
       )}
-    </article>
+    </Link>
   );
 }

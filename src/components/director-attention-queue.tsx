@@ -31,6 +31,7 @@ type AttentionIssue = {
   status: AttentionStatus;
   created_at: string | null;
   attention_entered_at: string | null;
+  latest_note: string | null;
 };
 
 type FollowUpAction = "not_fixed" | "retrieving_parts" | "unfixable";
@@ -38,6 +39,7 @@ type FollowUpAction = "not_fixed" | "retrieving_parts" | "unfixable";
 type AttentionHistory = {
   issue_id: string;
   new_status: string;
+  note: string | null;
   created_at: string | null;
 };
 
@@ -103,9 +105,8 @@ export function DirectorAttentionQueue({
     const issueIds = data.map((issue) => issue.id);
     const { data: historyData, error: historyError } = await supabase
       .from("issue_status_history")
-      .select("issue_id, new_status, created_at")
+      .select("issue_id, new_status, note, created_at")
       .in("issue_id", issueIds)
-      .in("new_status", attentionStatuses)
       .order("created_at", { ascending: false });
 
     if (historyError) {
@@ -120,11 +121,15 @@ export function DirectorAttentionQueue({
             history.issue_id === issue.id &&
             history.new_status === issue.status,
         );
+        const latestNote = histories.find(
+          (history) => history.issue_id === issue.id && history.note,
+        );
 
         return {
           ...issue,
           attention_entered_at:
             currentEntry?.created_at ?? issue.created_at ?? null,
+          latest_note: latestNote?.note ?? null,
         } as AttentionIssue;
       })
       .sort((left, right) => {
@@ -239,7 +244,12 @@ export function DirectorAttentionQueue({
     // Future technician messaging:
     // Original: "[TECH NAME] was assigned to help, they'll be there as soon as they can."
     // Additional: "[DIRECTOR NAME] needs you to help [ORIGINAL TECH NAME]."
-    const wasUpdated = await transitionIssue(issue, "in_progress");
+    const technicianLabel = getTemporaryTechnicianLabel(technicianId);
+    const wasUpdated = await transitionIssue(
+      issue,
+      "in_progress",
+      `Additional technician ${technicianLabel} assigned to help ${getTemporaryTechnicianLabel(assignments[issue.id])}.`,
+    );
 
     if (wasUpdated) {
       setFeedback("Additional Tech Assigned");
@@ -325,6 +335,11 @@ export function DirectorAttentionQueue({
                 {issue.position_name ? (
                   <p className="mt-1 text-xs text-[#cbd5e1]">
                     Position: {issue.position_name}
+                  </p>
+                ) : null}
+                {issue.latest_note ? (
+                  <p className="mt-2 text-xs italic leading-5 text-[#dbe4ef]">
+                    Note: {issue.latest_note}
                   </p>
                 ) : null}
 

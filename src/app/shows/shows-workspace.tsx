@@ -21,6 +21,12 @@ import {
   readActiveShowSnapshot,
   subscribeToActiveShowStore,
 } from "@/components/active-show-strip";
+import {
+  getContinuitySessionPolicyMessage,
+  setActiveContinuitySession,
+  type ActiveContinuitySession,
+  useActiveContinuitySession,
+} from "@/components/active-continuity-session";
 
 type ShowMode = "scripted" | "manual";
 
@@ -35,6 +41,10 @@ type ShowRecord = {
   created_by_user_id: string | null;
   created_at: string | null;
   updated_at: string | null;
+};
+
+type ContinuitySessionRecord = ActiveContinuitySession & {
+  ended_at: string | null;
 };
 
 const fieldClassName =
@@ -70,6 +80,7 @@ export function ShowsWorkspace() {
     readActiveShowSnapshot,
     getServerActiveShowSnapshot,
   );
+  const activeSession = useActiveContinuitySession();
   const [name, setName] = useState("");
   const [showMode, setShowMode] = useState<ShowMode>("scripted");
   const [showDate, setShowDate] = useState("");
@@ -80,6 +91,9 @@ export function ShowsWorkspace() {
   const [validationMessage, setValidationMessage] = useState<string | null>(
     null,
   );
+  const [sessionName, setSessionName] = useState("");
+  const [isStartingSession, setIsStartingSession] = useState(false);
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
 
   const fetchShows = useCallback(async () => {
     return supabase
@@ -122,6 +136,40 @@ export function ShowsWorkspace() {
 
     void loadInitialShows();
   }, [fetchShows]);
+
+  useEffect(() => {
+    const loadActiveSession = async () => {
+      if (!activeShow) {
+        setActiveContinuitySession(null);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("continuity_sessions")
+        .select("id, show_id, name, status, started_at, ended_at")
+        .eq("show_id", activeShow.id)
+        .eq("status", "active")
+        .is("ended_at", null)
+        .order("started_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        setSessionMessage(
+          getContinuitySessionPolicyMessage(
+            `Could not load active continuity session: ${error.message}.`,
+          ),
+        );
+        return;
+      }
+
+      setActiveContinuitySession(
+        data ? (data as ContinuitySessionRecord) : null,
+      );
+    };
+
+    void loadActiveSession();
+  }, [activeShow, supabase]);
 
   const handleCreateShow = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -177,11 +225,67 @@ export function ShowsWorkspace() {
       show_mode: show.show_mode,
     };
 
+    if (activeShow?.id !== show.id) {
+      setActiveContinuitySession(null);
+    }
+
     writeActiveShow(nextActiveShow);
   };
 
   const handleClearActiveShow = () => {
+    setActiveContinuitySession(null);
     writeActiveShow(null);
+  };
+
+  const handleStartSession = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    const trimmedName = sessionName.trim();
+
+    setSessionMessage(null);
+
+    if (!activeShow) {
+      setSessionMessage("Select an active show before starting a session.");
+      return;
+    }
+
+    if (!trimmedName) {
+      setSessionMessage("Continuity Session Name is required.");
+      return;
+    }
+
+    if (activeSession?.show_id === activeShow.id) {
+      setSessionMessage("End the current continuity session first.");
+      return;
+    }
+
+    setIsStartingSession(true);
+
+    const { data, error } = await supabase
+      .from("continuity_sessions")
+      .insert({
+        name: trimmedName,
+        show_id: activeShow.id,
+        started_by_user_id: null,
+        status: "active",
+      })
+      .select("id, show_id, name, status, started_at")
+      .single();
+
+    if (error) {
+      setSessionMessage(
+        getContinuitySessionPolicyMessage(
+          `Could not start continuity session: ${error.message}.`,
+        ),
+      );
+    } else if (data) {
+      setActiveContinuitySession(data as ActiveContinuitySession);
+      setSessionName("");
+      setSessionMessage(`Started continuity session: ${data.name}`);
+    }
+
+    setIsStartingSession(false);
   };
 
   const activeShowSurfaceClassName = activeShow
@@ -190,6 +294,8 @@ export function ShowsWorkspace() {
   const activeShowSecondaryTextClassName = activeShow
     ? ACTIVE_SHOW_SUCCESS_SECONDARY_TEXT
     : ACTIVE_SHOW_NEUTRAL_SECONDARY_TEXT;
+  const sessionForActiveShow =
+    activeSession?.show_id === activeShow?.id ? activeSession : null;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-5 py-6 sm:px-8 lg:py-8">
@@ -236,6 +342,54 @@ export function ShowsWorkspace() {
               </button>
             ) : null}
           </div>
+
+          <form
+            className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20"
+            onSubmit={handleStartSession}
+          >
+            <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#a78bfa]">
+              Continuity Sessions
+            </p>
+            <h2 className="mt-3 text-xl font-semibold text-white">
+              Start Continuity Session
+            </h2>
+            {sessionForActiveShow ? (
+              <div className="mt-4 rounded-lg border border-[#22c55e]/35 bg-[#082515] p-4">
+                <p className="text-sm font-semibold text-[#bbf7d0]">
+                  Active: {sessionForActiveShow.name}
+                </p>
+                <p className="mt-1 text-xs text-[#94a3b8]">
+                  End this session from the Director Console.
+                </p>
+              </div>
+            ) : (
+              <div className="mt-4 grid gap-3">
+                <label className="grid gap-2 text-sm font-semibold text-[#dbe4ef]">
+                  Continuity Session Name
+                  <input
+                    className={fieldClassName}
+                    onChange={(event) => setSessionName(event.target.value)}
+                    placeholder="Morning Continuity Check"
+                    value={sessionName}
+                  />
+                </label>
+                <button
+                  className="rounded-lg bg-[#6d28d9] px-4 py-3 text-sm font-semibold text-white disabled:cursor-wait disabled:opacity-60"
+                  disabled={isStartingSession || !activeShow}
+                  type="submit"
+                >
+                  {isStartingSession
+                    ? "Starting..."
+                    : "Start Continuity Session"}
+                </button>
+              </div>
+            )}
+            {sessionMessage ? (
+              <p className="mt-3 text-xs font-semibold leading-5 text-[#fde68a]">
+                {sessionMessage}
+              </p>
+            ) : null}
+          </form>
 
           <div className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

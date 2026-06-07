@@ -11,7 +11,11 @@ import {
 import {
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
+  setSelectedTemporaryTechnician,
+  useTemporaryAdditionalTechnicianAssignmentTimes,
   useTemporaryAdditionalTechnicianAssignments,
+  useSelectedTemporaryTechnician,
+  useTemporaryTechnicianAssignmentTimes,
   useTemporaryTechnicianAssignments,
 } from "@/components/temporary-technician-store";
 import {
@@ -32,6 +36,7 @@ type TechnicianIssue = {
   position_name: string | null;
   status: string;
   created_at: string | null;
+  updated_at: string | null;
 };
 
 type StatusAction = {
@@ -40,7 +45,7 @@ type StatusAction = {
   className: string;
 };
 
-type UnfixableHistoryNote = {
+type IssueHistoryNote = {
   issue_id: string;
   note: string | null;
   created_at: string | null;
@@ -93,23 +98,37 @@ const resolutionStatuses = new Set([
   "unfixable",
 ]);
 
+function getTimestampValue(value: string | null | undefined) {
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
 export default function TechnicianConsolePage() {
   const activeShow = useActiveShow();
   const assignments = useTemporaryTechnicianAssignments();
+  const assignmentTimes = useTemporaryTechnicianAssignmentTimes();
   const additionalAssignments =
     useTemporaryAdditionalTechnicianAssignments();
+  const additionalAssignmentTimes =
+    useTemporaryAdditionalTechnicianAssignmentTimes();
   const resolutionAcknowledgements =
     useResolutionNoticeAcknowledgements();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
-  const [selectedTechnician, setSelectedTechnician] =
-    useState<TemporaryTechnicianId>("tech_1");
+  const selectedTechnician = useSelectedTemporaryTechnician();
   const [issues, setIssues] = useState<TechnicianIssue[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [updatingIssueId, setUpdatingIssueId] = useState<string | null>(null);
   const [noteIssueId, setNoteIssueId] = useState<string | null>(null);
-  const [retrievingPartsNote, setRetrievingPartsNote] = useState("");
+  const [noteStatus, setNoteStatus] = useState<
+    "retrieving_parts" | "director_assistance_requested" | null
+  >(null);
+  const [requiredNote, setRequiredNote] = useState("");
+  const [noteValidation, setNoteValidation] = useState<string | null>(null);
   const [historyWarning, setHistoryWarning] = useState<string | null>(null);
-  const [unfixableNotes, setUnfixableNotes] = useState<
+  const [latestIssueNotes, setLatestIssueNotes] = useState<
+    Record<string, string>
+  >({});
+  const [latestStatusUpdateTimes, setLatestStatusUpdateTimes] = useState<
     Record<string, string>
   >({});
   const [historyReadWarning, setHistoryReadWarning] = useState<
@@ -128,20 +147,19 @@ export default function TechnicianConsolePage() {
     return supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, position_name, status, created_at",
+        "id, channel_number, cue_value, issue_type, position_name, status, created_at, updated_at",
       )
       .eq("show_id", activeShow.id)
       .order("created_at", { ascending: false });
   }, [activeShow, supabase]);
 
-  const refreshUnfixableNotes = useCallback(
+  const refreshLatestNotes = useCallback(
     async (issueRecords: TechnicianIssue[]) => {
-      const unfixableIssueIds = issueRecords
-        .filter((issue) => issue.status === "unfixable")
-        .map((issue) => issue.id);
+      const issueIds = issueRecords.map((issue) => issue.id);
 
-      if (unfixableIssueIds.length === 0) {
-        setUnfixableNotes({});
+      if (issueIds.length === 0) {
+        setLatestIssueNotes({});
+        setLatestStatusUpdateTimes({});
         setHistoryReadWarning(null);
         return;
       }
@@ -149,28 +167,37 @@ export default function TechnicianConsolePage() {
       const { data, error } = await supabase
         .from("issue_status_history")
         .select("issue_id, note, created_at")
-        .in("issue_id", unfixableIssueIds)
-        .eq("new_status", "unfixable")
-        .not("note", "is", null)
+        .in("issue_id", issueIds)
         .order("created_at", { ascending: false });
 
       if (error) {
-        setUnfixableNotes({});
+        setLatestIssueNotes({});
+        setLatestStatusUpdateTimes({});
         setHistoryReadWarning(getHistoryReadFailureMessage(error.message));
         return;
       }
 
-      const notes = ((data ?? []) as UnfixableHistoryNote[]).reduce<
-        Record<string, string>
-      >((latest, history) => {
-        if (history.note && !latest[history.issue_id]) {
-          latest[history.issue_id] = history.note;
+      const notes: Record<string, string> = {};
+      const statusUpdateTimes: Record<string, string> = {};
+
+      for (const history of (data ?? []) as IssueHistoryNote[]) {
+        if (
+          history.note?.trim() &&
+          !notes[history.issue_id]
+        ) {
+          notes[history.issue_id] = history.note;
         }
 
-        return latest;
-      }, {});
+        if (
+          history.created_at &&
+          !statusUpdateTimes[history.issue_id]
+        ) {
+          statusUpdateTimes[history.issue_id] = history.created_at;
+        }
+      }
 
-      setUnfixableNotes(notes);
+      setLatestIssueNotes(notes);
+      setLatestStatusUpdateTimes(statusUpdateTimes);
       setHistoryReadWarning(null);
     },
     [supabase],
@@ -189,8 +216,8 @@ export default function TechnicianConsolePage() {
 
     const nextIssues = (data ?? []) as TechnicianIssue[];
     setIssues(nextIssues);
-    await refreshUnfixableNotes(nextIssues);
-  }, [fetchIssues, refreshUnfixableNotes]);
+    await refreshLatestNotes(nextIssues);
+  }, [fetchIssues, refreshLatestNotes]);
 
   useEffect(() => {
     const loadIssues = async () => {
@@ -204,14 +231,14 @@ export default function TechnicianConsolePage() {
       } else {
         const nextIssues = (data ?? []) as TechnicianIssue[];
         setIssues(nextIssues);
-        await refreshUnfixableNotes(nextIssues);
+        await refreshLatestNotes(nextIssues);
       }
 
       setIsLoading(false);
     };
 
     void loadIssues();
-  }, [fetchIssues, refreshUnfixableNotes]);
+  }, [fetchIssues, refreshLatestNotes]);
 
   const assignedIssues = useMemo(
     () =>
@@ -228,10 +255,72 @@ export default function TechnicianConsolePage() {
     ],
   );
 
-  const activeIssues = useMemo(
+  const workingIssues = useMemo(
     () =>
-      assignedIssues.filter((issue) => activeStatuses.has(issue.status)),
-    [assignedIssues],
+      assignedIssues
+        .filter((issue) => issue.status === "in_progress")
+        .sort((a, b) => {
+          const aTime =
+            latestStatusUpdateTimes[a.id] ??
+            a.updated_at ??
+            a.created_at ??
+            "";
+          const bTime =
+            latestStatusUpdateTimes[b.id] ??
+            b.updated_at ??
+            b.created_at ??
+            "";
+
+          return getTimestampValue(bTime) - getTimestampValue(aTime);
+        }),
+    [assignedIssues, latestStatusUpdateTimes],
+  );
+
+  const fieldResponseIssues = useMemo(
+    () =>
+      assignedIssues
+        .filter(
+          (issue) =>
+            activeStatuses.has(issue.status) &&
+            issue.status !== "in_progress",
+        )
+        .sort((a, b) => {
+          const aIsQueued = a.status === "assigned";
+          const bIsQueued = b.status === "assigned";
+
+          if (aIsQueued !== bIsQueued) {
+            return aIsQueued ? -1 : 1;
+          }
+
+          const aAssignmentTime =
+            assignments[a.id] === selectedTechnician
+              ? assignmentTimes[a.id]
+              : additionalAssignmentTimes[a.id];
+          const bAssignmentTime =
+            assignments[b.id] === selectedTechnician
+              ? assignmentTimes[b.id]
+              : additionalAssignmentTimes[b.id];
+          const aTime =
+            (aIsQueued ? aAssignmentTime : latestStatusUpdateTimes[a.id]) ??
+            a.updated_at ??
+            a.created_at ??
+            "";
+          const bTime =
+            (bIsQueued ? bAssignmentTime : latestStatusUpdateTimes[b.id]) ??
+            b.updated_at ??
+            b.created_at ??
+            "";
+
+          return getTimestampValue(aTime) - getTimestampValue(bTime);
+        }),
+    [
+      additionalAssignmentTimes,
+      assignedIssues,
+      assignmentTimes,
+      assignments,
+      latestStatusUpdateTimes,
+      selectedTechnician,
+    ],
   );
 
   const resolutionNotices = useMemo(() => {
@@ -275,6 +364,23 @@ export default function TechnicianConsolePage() {
         message: `Status update failed: ${error.message}`,
       });
     } else {
+      const statusChangedAt = new Date().toISOString();
+      setIssues((currentIssues) =>
+        currentIssues.map((currentIssue) =>
+          currentIssue.id === issue.id
+            ? {
+                ...currentIssue,
+                status,
+                updated_at: statusChangedAt,
+              }
+            : currentIssue,
+        ),
+      );
+      setLatestStatusUpdateTimes((currentTimes) => ({
+        ...currentTimes,
+        [issue.id]: statusChangedAt,
+      }));
+
       const { error: historyError } = await supabase
         .from("issue_status_history")
         .insert({
@@ -296,10 +402,151 @@ export default function TechnicianConsolePage() {
           : null,
       );
       setNoteIssueId(null);
-      setRetrievingPartsNote("");
+      setNoteStatus(null);
+      setRequiredNote("");
+      setNoteValidation(null);
     }
 
     setUpdatingIssueId(null);
+  };
+
+  const renderIssueCard = (issue: TechnicianIssue) => {
+    const isUpdating = updatingIssueId === issue.id;
+
+    return (
+      <article
+        key={issue.id}
+        className="rounded-lg border border-white/10 bg-[#070b18] p-5"
+      >
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="grid gap-2">
+            <p className="text-base text-[#dbe4ef]">
+              <IssueIdentifiers
+                channelNumber={issue.channel_number}
+                cueValue={issue.cue_value}
+                issueType={issue.issue_type}
+              />
+            </p>
+            <p className="text-sm text-[#94a3b8]">
+              Position: {issue.position_name ?? "None"}
+            </p>
+            {latestIssueNotes[issue.id] ? (
+              <p className="text-sm italic leading-6 text-[#cbd5e1]">
+                Note: {latestIssueNotes[issue.id]}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-3">
+            <span
+              className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] ${getIssueStatusClassName(issue.status)}`}
+            >
+              {formatIssueLabel(issue.status)}
+            </span>
+            <Link
+              href={`/issues/${issue.id}`}
+              className="text-sm font-semibold text-[#c4b5fd] hover:text-white"
+            >
+              View Issue
+            </Link>
+          </div>
+        </div>
+
+        <div className="mt-5 flex flex-wrap gap-2 border-t border-white/10 pt-4">
+          {STATUS_ACTIONS.filter(
+            (action) => action.status !== issue.status,
+          ).map((action) => (
+            <button
+              key={action.status}
+              type="button"
+              disabled={isUpdating}
+              onClick={() => {
+                if (
+                  action.status === "retrieving_parts" ||
+                  action.status === "director_assistance_requested"
+                ) {
+                  setNoteIssueId(issue.id);
+                  setNoteStatus(action.status);
+                  setRequiredNote("");
+                  setNoteValidation(null);
+                  setFeedback(null);
+                  setHistoryWarning(null);
+                  return;
+                }
+
+                void updateIssueStatus(issue, action.status);
+              }}
+              className={`rounded-md border px-3 py-2 text-xs font-semibold transition hover:brightness-125 disabled:cursor-wait disabled:opacity-50 ${action.className}`}
+            >
+              {isUpdating ? "Updating..." : action.label}
+            </button>
+          ))}
+        </div>
+        {noteIssueId === issue.id ? (
+          <div className="mt-3 rounded-lg border border-[#f59e0b]/35 bg-[#2a1c06]/70 p-4">
+            <label className="grid gap-2 text-sm font-semibold text-[#fde68a]">
+              {noteStatus === "director_assistance_requested"
+                ? "Director Assistance Note"
+                : "Retrieving Parts Note"}
+              <textarea
+                className="min-h-20 resize-y rounded-md border border-white/15 bg-[#020617] p-3 text-sm text-white outline-none focus:border-[#f59e0b]"
+                onChange={(event) => {
+                  setRequiredNote(event.target.value);
+                  setNoteValidation(null);
+                }}
+                placeholder={
+                  noteStatus === "director_assistance_requested"
+                    ? "Required: explain what help is needed"
+                    : "Required: describe the parts being retrieved"
+                }
+                value={requiredNote}
+              />
+            </label>
+            {noteValidation ? (
+              <p className="mt-2 text-sm font-semibold text-[#fecaca]">
+                {noteValidation}
+              </p>
+            ) : null}
+            <div className="mt-3 flex gap-2">
+              <button
+                className="rounded-md bg-[#b45309] px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={isUpdating}
+                onClick={() => {
+                  if (!requiredNote.trim()) {
+                    setNoteValidation(
+                      "A short note is required before changing this status.",
+                    );
+                    return;
+                  }
+
+                  if (noteStatus) {
+                    void updateIssueStatus(
+                      issue,
+                      noteStatus,
+                      requiredNote.trim(),
+                    );
+                  }
+                }}
+                type="button"
+              >
+                Submit Note & Update Status
+              </button>
+              <button
+                className="rounded-md border border-white/15 px-3 py-2 text-xs font-semibold text-[#cbd5e1]"
+                onClick={() => {
+                  setNoteIssueId(null);
+                  setNoteStatus(null);
+                  setRequiredNote("");
+                  setNoteValidation(null);
+                }}
+                type="button"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </article>
+    );
   };
 
   return (
@@ -317,14 +564,14 @@ export default function TechnicianConsolePage() {
         </p>
       </section>
 
-      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20">
+      <section className="rounded-lg border border-[#3b82f6]/25 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-xl font-semibold text-white">
-              Field response queue
+              Working
             </h2>
             <p className="mt-2 text-sm text-[#94a3b8]">
-              Assignments are temporary MVP data stored in this browser.
+              Issues currently being worked by the selected technician.
             </p>
           </div>
           <label className="grid min-w-52 gap-2 text-sm font-semibold text-[#dbe4ef]">
@@ -332,7 +579,7 @@ export default function TechnicianConsolePage() {
             <select
               value={selectedTechnician}
               onChange={(event) => {
-                setSelectedTechnician(
+                setSelectedTemporaryTechnician(
                   event.target.value as TemporaryTechnicianId,
                 );
                 setFeedback(null);
@@ -368,121 +615,53 @@ export default function TechnicianConsolePage() {
         <div className="mt-5 grid gap-4">
           {isLoading ? (
             <p className="text-sm text-[#94a3b8]">Loading assigned issues...</p>
-          ) : activeIssues.length === 0 ? (
+          ) : workingIssues.length === 0 ? (
             <div className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-6 text-center">
               <p className="font-semibold text-[#dbe4ef]">
-                No active issues assigned to this technician.
+                No issues currently being worked.
               </p>
               <p className="mt-2 text-sm text-[#94a3b8]">
-                Use an Issue Detail page to create a temporary assignment.
+                Start an In Queue issue when field work begins.
               </p>
             </div>
           ) : (
-            activeIssues.map((issue) => {
-              const isUpdating = updatingIssueId === issue.id;
+            workingIssues.map(renderIssueCard)
+          )}
+        </div>
+      </section>
 
-              return (
-                <article
-                  key={issue.id}
-                  className="rounded-lg border border-white/10 bg-[#070b18] p-5"
-                >
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div className="grid gap-2">
-                      <p className="text-base text-[#dbe4ef]">
-                        <IssueIdentifiers
-                          channelNumber={issue.channel_number}
-                          cueValue={issue.cue_value}
-                          issueType={issue.issue_type}
-                        />
-                      </p>
-                      <p className="text-sm text-[#94a3b8]">
-                        Position: {issue.position_name ?? "None"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] ${getIssueStatusClassName(issue.status)}`}
-                      >
-                        {formatIssueLabel(issue.status)}
-                      </span>
-                      <Link
-                        href={`/issues/${issue.id}`}
-                        className="text-sm font-semibold text-[#c4b5fd] hover:text-white"
-                      >
-                        View Issue
-                      </Link>
-                    </div>
-                  </div>
+      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-white">
+              Field Response Queue
+            </h2>
+            <p className="mt-2 text-sm text-[#94a3b8]">
+              Waiting assignments and field responses, ordered for the
+              technician&apos;s next action.
+            </p>
+          </div>
+          <span className="rounded-md border border-white/10 bg-[#070b18] px-2 py-1 text-xs font-bold text-[#cbd5e1]">
+            {fieldResponseIssues.length}
+          </span>
+        </div>
 
-                  <div className="mt-5 flex flex-wrap gap-2 border-t border-white/10 pt-4">
-                    {STATUS_ACTIONS.map((action) => (
-                      <button
-                        key={action.status}
-                        type="button"
-                        disabled={isUpdating}
-                        onClick={() => {
-                          if (action.status === "retrieving_parts") {
-                            setNoteIssueId(issue.id);
-                            setRetrievingPartsNote("");
-                            setFeedback(null);
-                            setHistoryWarning(null);
-                            return;
-                          }
-
-                          void updateIssueStatus(issue, action.status);
-                        }}
-                        className={`rounded-md border px-3 py-2 text-xs font-semibold transition hover:brightness-125 disabled:cursor-wait disabled:opacity-50 ${action.className}`}
-                      >
-                        {isUpdating ? "Updating..." : action.label}
-                      </button>
-                    ))}
-                  </div>
-                  {noteIssueId === issue.id ? (
-                    <div className="mt-3 rounded-lg border border-[#f59e0b]/35 bg-[#2a1c06]/70 p-4">
-                      <label className="grid gap-2 text-sm font-semibold text-[#fde68a]">
-                        Retrieving Parts Note
-                        <textarea
-                          className="min-h-20 resize-y rounded-md border border-white/15 bg-[#020617] p-3 text-sm text-white outline-none focus:border-[#f59e0b]"
-                          onChange={(event) =>
-                            setRetrievingPartsNote(event.target.value)
-                          }
-                          placeholder="Required: describe the parts being retrieved"
-                          value={retrievingPartsNote}
-                        />
-                      </label>
-                      <div className="mt-3 flex gap-2">
-                        <button
-                          className="rounded-md bg-[#b45309] px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={
-                            !retrievingPartsNote.trim() || isUpdating
-                          }
-                          onClick={() =>
-                            void updateIssueStatus(
-                              issue,
-                              "retrieving_parts",
-                              retrievingPartsNote.trim(),
-                            )
-                          }
-                          type="button"
-                        >
-                          Save Note & Update Status
-                        </button>
-                        <button
-                          className="rounded-md border border-white/15 px-3 py-2 text-xs font-semibold text-[#cbd5e1]"
-                          onClick={() => {
-                            setNoteIssueId(null);
-                            setRetrievingPartsNote("");
-                          }}
-                          type="button"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                </article>
-              );
-            })
+        <div className="mt-5 grid gap-4">
+          {isLoading ? (
+            <p className="text-sm text-[#94a3b8]">
+              Loading field response queue...
+            </p>
+          ) : fieldResponseIssues.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-6 text-center">
+              <p className="font-semibold text-[#dbe4ef]">
+                No issues waiting in the field response queue.
+              </p>
+              <p className="mt-2 text-sm text-[#94a3b8]">
+                New assignments will appear here until work begins.
+              </p>
+            </div>
+          ) : (
+            fieldResponseIssues.map(renderIssueCard)
           )}
         </div>
       </section>
@@ -532,10 +711,13 @@ export default function TechnicianConsolePage() {
                     >
                       {formatIssueLabel(issue.status)}
                     </span>
-                    {issue.status === "unfixable" ? (
+                    {latestIssueNotes[issue.id] ? (
                       <p className="mt-3 text-sm italic leading-6 text-[#cbd5e1]">
-                        {unfixableNotes[issue.id] ??
-                          "No unfixable note provided."}
+                        Note: {latestIssueNotes[issue.id]}
+                      </p>
+                    ) : issue.status === "unfixable" ? (
+                      <p className="mt-3 text-sm italic leading-6 text-[#cbd5e1]">
+                        Note: No unfixable note provided.
                       </p>
                     ) : null}
                   </div>

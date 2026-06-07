@@ -18,6 +18,7 @@ import {
   setTemporaryTechnicianAssignment,
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
+  useTemporaryAdditionalTechnicianAssignments,
   useTemporaryTechnicianAssignments,
 } from "@/components/temporary-technician-store";
 import { getHistoryReadFailureMessage } from "@/lib/issue-status-history";
@@ -35,7 +36,15 @@ type IssueDetail = {
   updated_at: string | null;
 };
 
-type RetrievingPartsHistory = {
+type LatestHistoryNote = {
+  note: string | null;
+  created_at: string | null;
+};
+
+type IssueHistoryRecord = {
+  id: string;
+  old_status: string | null;
+  new_status: string;
   note: string | null;
   created_at: string | null;
 };
@@ -64,12 +73,16 @@ export default function IssueDetailPage({
   const [assignmentMessage, setAssignmentMessage] = useState<string | null>(
     null,
   );
-  const [retrievingPartsHistory, setRetrievingPartsHistory] =
-    useState<RetrievingPartsHistory | null>(null);
+  const [latestHistoryNote, setLatestHistoryNote] =
+    useState<LatestHistoryNote | null>(null);
+  const [timeline, setTimeline] = useState<IssueHistoryRecord[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const assignments = useTemporaryTechnicianAssignments();
+  const additionalAssignments =
+    useTemporaryAdditionalTechnicianAssignments();
   const assignmentSelectRef = useRef<HTMLSelectElement>(null);
   const savedAssignment = assignments[id];
+  const additionalAssignment = additionalAssignments[id];
 
   const fetchIssue = useCallback(async () => {
     return supabase
@@ -92,21 +105,30 @@ export default function IssueDetailPage({
       } else {
         setIssue(data as IssueDetail);
 
-        const { data: noteData, error: noteError } = await supabase
+        const { data: historyData, error: timelineError } = await supabase
           .from("issue_status_history")
-          .select("note, created_at")
+          .select("id, old_status, new_status, note, created_at")
           .eq("issue_id", id)
-          .eq("new_status", "retrieving_parts")
-          .not("note", "is", null)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+          .order("created_at", { ascending: true });
 
-        if (noteError) {
-          setHistoryError(getHistoryReadFailureMessage(noteError.message));
+        if (timelineError) {
+          setHistoryError(
+            getHistoryReadFailureMessage(timelineError.message),
+          );
         } else {
-          setRetrievingPartsHistory(
-            noteData as RetrievingPartsHistory | null,
+          const records = (historyData ?? []) as IssueHistoryRecord[];
+          const latestNoteRecord = [...records]
+            .reverse()
+            .find((record) => record.note?.trim());
+
+          setTimeline([...records].reverse());
+          setLatestHistoryNote(
+            latestNoteRecord
+              ? {
+                  note: latestNoteRecord.note,
+                  created_at: latestNoteRecord.created_at,
+                }
+              : null,
           );
         }
       }
@@ -218,24 +240,24 @@ export default function IssueDetailPage({
 
             <section className="rounded-lg border border-[#f59e0b]/30 bg-[#2a1c06]/55 p-5">
               <h2 className="text-lg font-semibold text-white">
-                Latest Retrieving Parts Note
+                Latest Operational Note
               </h2>
               {historyError ? (
                 <p className="mt-3 text-sm font-semibold leading-6 text-[#fde68a]">
                   {historyError}
                 </p>
-              ) : retrievingPartsHistory?.note ? (
+              ) : latestHistoryNote?.note ? (
                 <>
                   <p className="mt-3 text-sm italic leading-6 text-[#e2e8f0]">
-                    {retrievingPartsHistory.note}
+                    Note: {latestHistoryNote.note}
                   </p>
                   <p className="mt-2 text-xs text-[#94a3b8]">
-                    {formatDateTime(retrievingPartsHistory.created_at)}
+                    {formatDateTime(latestHistoryNote.created_at)}
                   </p>
                 </>
               ) : (
                 <p className="mt-3 text-sm text-[#94a3b8]">
-                  No Retrieving Parts note has been recorded.
+                  No operational note has been recorded.
                 </p>
               )}
             </section>
@@ -256,6 +278,106 @@ export default function IssueDetailPage({
                 value="Root cause documentation not implemented yet"
               />
             </dl>
+
+            <section className="rounded-lg border border-white/10 bg-[#070b18] p-5">
+              <div className="border-b border-white/10 pb-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#a78bfa]">
+                  Lifecycle
+                </p>
+                <h2 className="mt-1 text-xl font-semibold text-white">
+                  Issue Timeline
+                </h2>
+              </div>
+
+              <ol className="mt-5 grid gap-0">
+                  {historyError ? (
+                    <li className="ml-7 rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-4 text-sm font-semibold leading-6 text-[#fde68a]">
+                      {historyError}
+                    </li>
+                  ) : timeline.map((record) => (
+                    <li
+                      className="relative grid grid-cols-[1rem_1fr] gap-3 pb-5 last:pb-0"
+                      key={record.id}
+                    >
+                      <span className="absolute bottom-0 left-[0.4375rem] top-4 w-px bg-[#334155]" />
+                      <span className="relative z-10 mt-1 h-4 w-4 rounded-full border-2 border-[#a78bfa] bg-[#130a2b]" />
+                      <div className="rounded-lg border border-white/10 bg-[#0b1020] p-4">
+                        <time className="text-xs font-semibold text-[#94a3b8]">
+                          {formatDateTime(record.created_at)}
+                        </time>
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                          <span className="rounded-md border border-white/10 bg-[#111827] px-2 py-1 font-semibold text-[#cbd5e1]">
+                            {record.old_status
+                              ? formatIssueLabel(record.old_status)
+                              : "Not Recorded"}
+                          </span>
+                          <span className="text-[#64748b]">to</span>
+                          <span
+                            className={`rounded-md border px-2 py-1 font-semibold ${getIssueStatusClassName(record.new_status)}`}
+                          >
+                            {formatIssueLabel(record.new_status)}
+                          </span>
+                        </div>
+                        {record.note ? (
+                          <p className="mt-3 text-sm italic leading-6 text-[#dbe4ef]">
+                            Note: {record.note}
+                          </p>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))}
+                  {!historyError && timeline.length === 0 ? (
+                    <li className="ml-7 mb-5 rounded-lg border border-dashed border-white/15 p-4 text-sm text-[#94a3b8]">
+                      No timeline history has been recorded for this issue yet.
+                    </li>
+                  ) : null}
+                  <li className="relative grid grid-cols-[1rem_1fr] gap-3">
+                    <span className="relative z-10 mt-1 h-4 w-4 rounded-full border-2 border-[#22c55e] bg-[#082515]" />
+                    <div className="rounded-lg border border-[#22c55e]/30 bg-[#082515]/55 p-4">
+                      <time className="text-xs font-semibold text-[#94a3b8]">
+                        {formatDateTime(issue.created_at)}
+                      </time>
+                      <h3 className="mt-2 text-sm font-semibold text-white">
+                        Issue Created
+                      </h3>
+                      <p className="mt-2 text-sm text-[#dbe4ef]">
+                        <IssueIdentifiers
+                          channelNumber={issue.channel_number}
+                          cueValue={issue.cue_value}
+                          issueType={issue.issue_type}
+                        />
+                      </p>
+                      <p className="mt-2 text-xs text-[#cbd5e1]">
+                        Initial status:{" "}
+                        <strong>
+                          {formatIssueLabel(
+                            timeline[timeline.length - 1]?.old_status ??
+                              "new",
+                          )}
+                        </strong>
+                      </p>
+                      {savedAssignment ? (
+                        <p className="mt-1 text-xs text-[#cbd5e1]">
+                          Assigned to:{" "}
+                          <strong>
+                            {getTemporaryTechnicianLabel(savedAssignment)}
+                          </strong>
+                        </p>
+                      ) : null}
+                      {additionalAssignment ? (
+                        <p className="mt-1 text-xs text-[#c4b5fd]">
+                          Additional technician:{" "}
+                          <strong>
+                            {getTemporaryTechnicianLabel(
+                              additionalAssignment,
+                            )}
+                          </strong>
+                        </p>
+                      ) : null}
+                    </div>
+                  </li>
+                </ol>
+            </section>
           </div>
         ) : null}
       </section>

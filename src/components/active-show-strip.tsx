@@ -1,6 +1,8 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { useActiveContinuitySession } from "./active-continuity-session";
+import { ISSUE_IDENTIFIER_VALUE_CLASS_NAME } from "./issue-identifiers";
 
 export type ActiveShow = {
   id: string;
@@ -73,6 +75,9 @@ export function useActiveShow() {
 
 export function ActiveShowStrip() {
   const activeShow = useActiveShow();
+  const activeSession = useActiveContinuitySession();
+  const sessionForActiveShow =
+    activeSession?.show_id === activeShow?.id ? activeSession : null;
   const surfaceClassName = activeShow
     ? ACTIVE_SHOW_SUCCESS_SURFACE
     : ACTIVE_SHOW_NEUTRAL_SURFACE;
@@ -84,7 +89,18 @@ export function ActiveShowStrip() {
     <div className={`border-t ${surfaceClassName}`}>
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-1 px-5 py-2 sm:px-8 md:flex-row md:items-center md:justify-between">
         <p className="text-sm font-semibold text-[#f8fafc]">
-          Active Show: {activeShow?.name ?? "None Selected"}
+          Active Show:{" "}
+          <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+            {activeShow?.name ?? "None Selected"}
+          </strong>
+          {sessionForActiveShow ? (
+            <>
+              {" | Session: "}
+              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+                {sessionForActiveShow.name}
+              </strong>
+            </>
+          ) : null}
         </p>
         <p className={`text-xs italic ${secondaryTextClassName}`}>
           Script: No script loaded

@@ -28,8 +28,13 @@ const ADDITIONAL_STORE_EVENT =
   "pyro-crew-temporary-additional-technician-assignments-change";
 const ADDITIONAL_ASSIGNMENT_TIME_STORAGE_KEY =
   "pyro-crew-temporary-additional-technician-assignment-times";
+const SELECTED_TECHNICIAN_STORAGE_KEY =
+  "pyro-crew-selected-temporary-technician";
+const SELECTED_TECHNICIAN_STORE_EVENT =
+  "pyro-crew-selected-temporary-technician-change";
 const EMPTY_ASSIGNMENTS: TemporaryTechnicianAssignments = {};
 const EMPTY_ASSIGNMENT_TIMES: TemporaryAssignmentTimes = {};
+const DEFAULT_SELECTED_TECHNICIAN: TemporaryTechnicianId = "tech_1";
 
 let cachedStorageValue: string | null = null;
 let cachedAssignments = EMPTY_ASSIGNMENTS;
@@ -39,6 +44,8 @@ let cachedAdditionalStorageValue: string | null = null;
 let cachedAdditionalAssignments = EMPTY_ASSIGNMENTS;
 let cachedAdditionalAssignmentTimeStorageValue: string | null = null;
 let cachedAdditionalAssignmentTimes = EMPTY_ASSIGNMENT_TIMES;
+let cachedSelectedTechnician: TemporaryTechnicianId =
+  DEFAULT_SELECTED_TECHNICIAN;
 
 function isTemporaryTechnicianId(
   value: unknown,
@@ -133,6 +140,35 @@ function subscribeToAdditionalAssignments(onStoreChange: () => void) {
   return () => {
     window.removeEventListener("storage", onStoreChange);
     window.removeEventListener(ADDITIONAL_STORE_EVENT, onStoreChange);
+  };
+}
+
+function readSelectedTechnicianSnapshot() {
+  if (typeof window === "undefined") {
+    return DEFAULT_SELECTED_TECHNICIAN;
+  }
+
+  const stored = window.localStorage.getItem(
+    SELECTED_TECHNICIAN_STORAGE_KEY,
+  );
+
+  cachedSelectedTechnician = isTemporaryTechnicianId(stored)
+    ? stored
+    : DEFAULT_SELECTED_TECHNICIAN;
+
+  return cachedSelectedTechnician;
+}
+
+function subscribeToSelectedTechnician(onStoreChange: () => void) {
+  window.addEventListener("storage", onStoreChange);
+  window.addEventListener(SELECTED_TECHNICIAN_STORE_EVENT, onStoreChange);
+
+  return () => {
+    window.removeEventListener("storage", onStoreChange);
+    window.removeEventListener(
+      SELECTED_TECHNICIAN_STORE_EVENT,
+      onStoreChange,
+    );
   };
 }
 
@@ -233,6 +269,25 @@ export function useTemporaryAdditionalTechnicianAssignmentTimes() {
       ),
     () => EMPTY_ASSIGNMENT_TIMES,
   );
+}
+
+export function useSelectedTemporaryTechnician() {
+  return useSyncExternalStore(
+    subscribeToSelectedTechnician,
+    readSelectedTechnicianSnapshot,
+    () => DEFAULT_SELECTED_TECHNICIAN,
+  );
+}
+
+export function setSelectedTemporaryTechnician(
+  technicianId: TemporaryTechnicianId,
+) {
+  window.localStorage.setItem(
+    SELECTED_TECHNICIAN_STORAGE_KEY,
+    technicianId,
+  );
+  cachedSelectedTechnician = technicianId;
+  window.dispatchEvent(new Event(SELECTED_TECHNICIAN_STORE_EVENT));
 }
 
 export function setTemporaryTechnicianAssignment(

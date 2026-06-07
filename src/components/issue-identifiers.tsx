@@ -5,13 +5,27 @@ type IssueIdentifiersProps = {
   cueLabel?: "Cue" | "Cue(s)";
 };
 
-export function formatIssueLabel(value: string) {
-  if (value === "new") {
-    return "New / Unassigned";
-  }
+export const ISSUE_IDENTIFIER_VALUE_CLASS_NAME =
+  "font-bold text-[#f28b82]";
 
-  if (value === "in_progress") {
-    return "Working";
+export function formatIssueLabel(value: string) {
+  const labels: Record<string, string> = {
+    new: "New / Unassigned",
+    assigned: "In Queue",
+    in_progress: "Working",
+    awaiting_verification: "Awaiting Verification",
+    verification_failed: "Not Fixed",
+    verified_resolved: "Verified Resolved",
+    retrieving_parts: "Retrieving Parts",
+    director_assistance_requested: "Director Assistance Req",
+    additional_technician_requested:
+      "Additional Technician Requested",
+    unfixable: "Unfixable",
+    closed: "Closed",
+  };
+
+  if (labels[value]) {
+    return labels[value];
   }
 
   return value
@@ -53,15 +67,19 @@ export function IssueIdentifiers({
   issueType,
   cueLabel = "Cue(s)",
 }: IssueIdentifiersProps) {
-  const emphasizedClassName = "font-bold text-[#f28b82]";
-
   return (
     <span>
-      CH <strong className={emphasizedClassName}>{channelNumber}</strong>
+      CH{" "}
+      <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+        {channelNumber}
+      </strong>
       <span className="text-[#64748b]"> | </span>
-      {cueLabel} <strong className={emphasizedClassName}>{cueValue}</strong>
+      {cueLabel}{" "}
+      <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+        {cueValue}
+      </strong>
       <span className="text-[#64748b]"> | </span>
-      <strong className={emphasizedClassName}>
+      <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
         {formatIssueLabel(issueType)}
       </strong>
     </span>
