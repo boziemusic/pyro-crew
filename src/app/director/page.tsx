@@ -15,7 +15,20 @@ import {
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import { DirectorAttentionQueue } from "@/components/director-attention-queue";
-import { getHistoryReadFailureMessage } from "@/lib/issue-status-history";
+import {
+  getTemporaryTechnicianLabel,
+  setTemporaryTechnicianAssignment,
+  TEMPORARY_TECHNICIANS,
+  type TemporaryTechnicianId,
+  useTemporaryAdditionalTechnicianAssignments,
+  useTemporaryAdditionalTechnicianAssignmentTimes,
+  useTemporaryTechnicianAssignmentTimes,
+  useTemporaryTechnicianAssignments,
+} from "@/components/temporary-technician-store";
+import {
+  getHistoryReadFailureMessage,
+  getHistoryWriteFailureMessage,
+} from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 
 const fieldClassName =
@@ -34,6 +47,7 @@ type IssueRecord = {
   status: string;
   position_name: string | null;
   created_at: string | null;
+  updated_at: string | null;
 };
 
 type IssueHistoryNote = {
@@ -76,9 +90,40 @@ function formatActivityTime(createdAt: string | null) {
   }).format(new Date(createdAt));
 }
 
+const terminalStatuses = new Set([
+  "verified_resolved",
+  "closed",
+  "unfixable",
+]);
+
+function formatElapsedTime(startedAt: string | null, now: number | null) {
+  if (!startedAt || now === null) {
+    return "Starting...";
+  }
+
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((now - new Date(startedAt).getTime()) / 1000),
+  );
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+
+  return [hours, minutes, seconds]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+}
+
 export default function DirectorConsolePage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const activeShow = useActiveShow();
+  const technicianAssignments = useTemporaryTechnicianAssignments();
+  const technicianAssignmentTimes =
+    useTemporaryTechnicianAssignmentTimes();
+  const additionalAssignments =
+    useTemporaryAdditionalTechnicianAssignments();
+  const additionalAssignmentTimes =
+    useTemporaryAdditionalTechnicianAssignmentTimes();
   const isScripted = activeShow?.show_mode === "scripted";
   const isManual = activeShow?.show_mode === "manual";
   const [channelNumber, setChannelNumber] = useState("");
@@ -98,6 +143,25 @@ export default function DirectorConsolePage() {
   const [expandedStatuses, setExpandedStatuses] = useState<Set<string>>(
     new Set(),
   );
+  const [assigningIssueId, setAssigningIssueId] = useState<string | null>(
+    null,
+  );
+  const [assignmentFeedback, setAssignmentFeedback] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [assignmentWarning, setAssignmentWarning] = useState<string | null>(
+    null,
+  );
+  const [timerNow, setTimerNow] = useState<number | null>(null);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setTimerNow(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   const fetchIssues = useCallback(async () => {
     if (!activeShow) {
@@ -107,7 +171,7 @@ export default function DirectorConsolePage() {
     return supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, status, position_name, created_at",
+        "id, channel_number, cue_value, issue_type, status, position_name, created_at, updated_at",
       )
       .eq("show_id", activeShow.id)
       .order("created_at", { ascending: false });
@@ -199,6 +263,55 @@ export default function DirectorConsolePage() {
 
   const latestIssue = issues[0] ?? null;
 
+  const technicianOverview = useMemo(
+    () =>
+      TEMPORARY_TECHNICIANS.map((technician) => {
+        const activeIssues = issues
+          .filter(
+            (issue) =>
+              !terminalStatuses.has(issue.status) &&
+              (technicianAssignments[issue.id] === technician.id ||
+                additionalAssignments[issue.id] === technician.id),
+          )
+          .map((issue) => {
+            const isPrimary =
+              technicianAssignments[issue.id] === technician.id;
+            const assignedAt = isPrimary
+              ? technicianAssignmentTimes[issue.id]
+              : additionalAssignmentTimes[issue.id];
+
+            return {
+              issue,
+              assignedAt:
+                assignedAt ?? issue.updated_at ?? issue.created_at,
+            };
+          })
+          .sort((left, right) => {
+            const leftTime = left.assignedAt
+              ? new Date(left.assignedAt).getTime()
+              : 0;
+            const rightTime = right.assignedAt
+              ? new Date(right.assignedAt).getTime()
+              : 0;
+
+            return leftTime - rightTime;
+          });
+
+        return {
+          ...technician,
+          activeIssues,
+          currentIssue: activeIssues[0] ?? null,
+        };
+      }),
+    [
+      additionalAssignmentTimes,
+      additionalAssignments,
+      issues,
+      technicianAssignmentTimes,
+      technicianAssignments,
+    ],
+  );
+
   const toggleStatus = (status: string) => {
     setExpandedStatuses((current) => {
       const next = new Set(current);
@@ -211,6 +324,58 @@ export default function DirectorConsolePage() {
 
       return next;
     });
+  };
+
+  const assignTechnician = async (
+    issue: IssueRecord,
+    technicianId: TemporaryTechnicianId,
+  ) => {
+    if (!activeShow) {
+      return;
+    }
+
+    setAssigningIssueId(issue.id);
+    setAssignmentFeedback(null);
+    setAssignmentWarning(null);
+
+    const { error: updateError } = await supabase
+      .from("issues")
+      .update({ status: "in_progress" })
+      .eq("id", issue.id)
+      .eq("show_id", activeShow.id);
+
+    if (updateError) {
+      setAssignmentFeedback({
+        type: "error",
+        message: `Could not assign technician: ${updateError.message}`,
+      });
+      setAssigningIssueId(null);
+      return;
+    }
+
+    setTemporaryTechnicianAssignment(issue.id, technicianId);
+
+    const { error: historyError } = await supabase
+      .from("issue_status_history")
+      .insert({
+        changed_by_user_id: null,
+        issue_id: issue.id,
+        new_status: "in_progress",
+        note: null,
+        old_status: issue.status,
+      });
+
+    setAssignmentFeedback({
+      type: "success",
+      message: `${getTemporaryTechnicianLabel(technicianId)} assigned. Issue moved to Working.`,
+    });
+    setAssignmentWarning(
+      historyError
+        ? getHistoryWriteFailureMessage(historyError.message)
+        : null,
+    );
+    await refreshIssues();
+    setAssigningIssueId(null);
   };
 
   const handleSubmitIssue = async (event: FormEvent<HTMLFormElement>) => {
@@ -272,17 +437,31 @@ export default function DirectorConsolePage() {
 
   return (
     <div className="mx-auto flex w-full max-w-[96rem] flex-col gap-6 px-5 py-6 sm:px-8 xl:pr-[21rem] lg:py-8">
-      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25">
-        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#a78bfa]">
-          Director Console
-        </p>
-        <h1 className="mt-3 text-3xl font-semibold tracking-normal text-white sm:text-4xl">
-          Continuity Dispatch
-        </h1>
-        <p className="mt-4 max-w-3xl text-base leading-7 text-[#b6c3d1]">
-          Create continuity issues from firing system status for the active
-          show and monitor field workload as new issues arrive.
-        </p>
+      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-4 shadow-2xl shadow-black/25">
+        <div className="flex flex-col gap-1 border-b border-white/10 pb-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#a78bfa]">
+              Director Console
+            </p>
+            <h1 className="mt-1 text-xl font-semibold text-white">
+              Tech Overview
+            </h1>
+          </div>
+          <p className="text-xs text-[#94a3b8]">
+            Open assigned workload
+          </p>
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
+          {technicianOverview.map((technician) => (
+            <TechOverviewCard
+              currentIssue={technician.currentIssue}
+              key={technician.id}
+              loadCount={technician.activeIssues.length}
+              now={timerNow}
+              technicianName={technician.label}
+            />
+          ))}
+        </div>
       </section>
 
       {!activeShow ? (
@@ -499,16 +678,59 @@ export default function DirectorConsolePage() {
                       {expandedStatuses.has(status) ? (
                         <div className="mt-1 grid gap-1 border-l border-white/10 pl-2">
                           {statusIssues.map((issue) => (
-                            <Link
+                            <div
                               className="rounded-md border border-white/10 bg-[#070b18] px-3 py-2 text-xs text-[#dbe4ef] transition-colors hover:border-[#8b5cf6]/60"
-                              href={`/issues/${issue.id}`}
                               key={issue.id}
                             >
-                              <IssueIdentifiers
-                                channelNumber={issue.channel_number}
-                                cueValue={issue.cue_value}
-                                issueType={issue.issue_type}
-                              />
+                              <span className="flex items-start justify-between gap-3">
+                                <Link
+                                  className="min-w-0 hover:text-white"
+                                  href={`/issues/${issue.id}`}
+                                >
+                                  <IssueIdentifiers
+                                    channelNumber={issue.channel_number}
+                                    cueValue={issue.cue_value}
+                                    issueType={issue.issue_type}
+                                  />
+                                </Link>
+                                {status === "new" ? (
+                                  <select
+                                    aria-label={`Assign technician to channel ${issue.channel_number}, cue ${issue.cue_value}`}
+                                    className="h-8 max-w-32 shrink-0 rounded-md border border-[#8b5cf6]/40 bg-[#130a2b] px-2 text-xs font-semibold text-white outline-none focus:border-[#a78bfa]"
+                                    disabled={assigningIssueId === issue.id}
+                                    onChange={(event) => {
+                                      const technicianId = event.target
+                                        .value as TemporaryTechnicianId | "";
+
+                                      if (technicianId) {
+                                        void assignTechnician(
+                                          issue,
+                                          technicianId,
+                                        );
+                                      }
+                                    }}
+                                    value=""
+                                  >
+                                    <option value="">Assign Tech</option>
+                                    {TEMPORARY_TECHNICIANS.map(
+                                      (technician) => (
+                                        <option
+                                          key={technician.id}
+                                          value={technician.id}
+                                        >
+                                          {technician.label}
+                                        </option>
+                                      ),
+                                    )}
+                                  </select>
+                                ) : (
+                                  <span className="shrink-0 text-right font-semibold text-[#cbd5e1]">
+                                    {getTemporaryTechnicianLabel(
+                                      technicianAssignments[issue.id],
+                                    )}
+                                  </span>
+                                )}
+                              </span>
                               {issue.position_name ? (
                                 <span className="mt-1 block text-[#94a3b8]">
                                   Position: {issue.position_name}
@@ -519,7 +741,7 @@ export default function DirectorConsolePage() {
                                   Note: {latestIssueNotes[issue.id]}
                                 </span>
                               ) : null}
-                            </Link>
+                            </div>
                           ))}
                         </div>
                       ) : null}
@@ -532,11 +754,78 @@ export default function DirectorConsolePage() {
                   {issueLoadError}
                 </p>
               ) : null}
+              {assignmentFeedback ? (
+                <p
+                  className={`mt-3 text-xs font-semibold ${
+                    assignmentFeedback.type === "success"
+                      ? "text-[#bbf7d0]"
+                      : "text-[#fecaca]"
+                  }`}
+                >
+                  {assignmentFeedback.message}
+                </p>
+              ) : null}
+              {assignmentWarning ? (
+                <p className="mt-2 text-xs font-semibold leading-5 text-[#fde68a]">
+                  {assignmentWarning}
+                </p>
+              ) : null}
             </div>
           </aside>
         </section>
       )}
       <DirectorAttentionQueue onIssueUpdated={refreshIssues} />
     </div>
+  );
+}
+
+function TechOverviewCard({
+  currentIssue,
+  loadCount,
+  now,
+  technicianName,
+}: {
+  currentIssue: {
+    issue: IssueRecord;
+    assignedAt: string | null;
+  } | null;
+  loadCount: number;
+  now: number | null;
+  technicianName: string;
+}) {
+  const workloadClassName =
+    loadCount >= 4
+      ? "border-[#ef4444]/45 bg-[#2a0b13]"
+      : loadCount >= 2
+        ? "border-[#f59e0b]/45 bg-[#2a1c06]"
+        : "border-[#22c55e]/40 bg-[#082515]";
+
+  return (
+    <article className={`rounded-lg border p-3 ${workloadClassName}`}>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-white">
+          {technicianName}
+        </h2>
+        <span className="text-xs font-bold text-[#dbe4ef]">
+          Load {loadCount}
+        </span>
+      </div>
+      {currentIssue ? (
+        <div className="mt-2 grid gap-1">
+          <p className="truncate text-xs text-[#dbe4ef]">
+            <IssueIdentifiers
+              channelNumber={currentIssue.issue.channel_number}
+              cueValue={currentIssue.issue.cue_value}
+              issueType={currentIssue.issue.issue_type}
+            />
+          </p>
+          <p className="font-mono text-xs font-semibold text-[#cbd5e1]">
+            {formatElapsedTime(currentIssue.assignedAt, now)}
+          </p>
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-[#94a3b8]">No active issue</p>
+      )}
+    </article>
   );
 }

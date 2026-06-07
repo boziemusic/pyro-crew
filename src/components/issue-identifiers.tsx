@@ -6,6 +6,14 @@ type IssueIdentifiersProps = {
 };
 
 export function formatIssueLabel(value: string) {
+  if (value === "new") {
+    return "New / Unassigned";
+  }
+
+  if (value === "in_progress") {
+    return "Working";
+  }
+
   return value
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))

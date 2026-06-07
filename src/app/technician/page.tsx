@@ -14,7 +14,14 @@ import {
   useTemporaryAdditionalTechnicianAssignments,
   useTemporaryTechnicianAssignments,
 } from "@/components/temporary-technician-store";
-import { getHistoryWriteFailureMessage } from "@/lib/issue-status-history";
+import {
+  acknowledgeResolutionNotice,
+  useResolutionNoticeAcknowledgements,
+} from "@/components/resolution-notice-store";
+import {
+  getHistoryReadFailureMessage,
+  getHistoryWriteFailureMessage,
+} from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 
 type TechnicianIssue = {
@@ -33,9 +40,15 @@ type StatusAction = {
   className: string;
 };
 
+type UnfixableHistoryNote = {
+  issue_id: string;
+  note: string | null;
+  created_at: string | null;
+};
+
 const STATUS_ACTIONS: StatusAction[] = [
   {
-    label: "Start Work",
+    label: "Working",
     status: "in_progress",
     className: "border-[#3b82f6]/45 bg-[#0b1b35] text-[#bfdbfe]",
   },
@@ -61,11 +74,32 @@ const STATUS_ACTIONS: StatusAction[] = [
   },
 ];
 
+const activeStatuses = new Set([
+  "new",
+  "assigned",
+  "in_progress",
+  "retrieving_parts",
+  "director_assistance_requested",
+  "additional_technician_requested",
+  "awaiting_verification",
+  "verification_failed",
+  "root_cause_required",
+  "unfixable_recommended",
+]);
+
+const resolutionStatuses = new Set([
+  "verified_resolved",
+  "closed",
+  "unfixable",
+]);
+
 export default function TechnicianConsolePage() {
   const activeShow = useActiveShow();
   const assignments = useTemporaryTechnicianAssignments();
   const additionalAssignments =
     useTemporaryAdditionalTechnicianAssignments();
+  const resolutionAcknowledgements =
+    useResolutionNoticeAcknowledgements();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [selectedTechnician, setSelectedTechnician] =
     useState<TemporaryTechnicianId>("tech_1");
@@ -75,6 +109,12 @@ export default function TechnicianConsolePage() {
   const [noteIssueId, setNoteIssueId] = useState<string | null>(null);
   const [retrievingPartsNote, setRetrievingPartsNote] = useState("");
   const [historyWarning, setHistoryWarning] = useState<string | null>(null);
+  const [unfixableNotes, setUnfixableNotes] = useState<
+    Record<string, string>
+  >({});
+  const [historyReadWarning, setHistoryReadWarning] = useState<
+    string | null
+  >(null);
   const [feedback, setFeedback] = useState<{
     type: "success" | "error";
     message: string;
@@ -94,6 +134,48 @@ export default function TechnicianConsolePage() {
       .order("created_at", { ascending: false });
   }, [activeShow, supabase]);
 
+  const refreshUnfixableNotes = useCallback(
+    async (issueRecords: TechnicianIssue[]) => {
+      const unfixableIssueIds = issueRecords
+        .filter((issue) => issue.status === "unfixable")
+        .map((issue) => issue.id);
+
+      if (unfixableIssueIds.length === 0) {
+        setUnfixableNotes({});
+        setHistoryReadWarning(null);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("issue_status_history")
+        .select("issue_id, note, created_at")
+        .in("issue_id", unfixableIssueIds)
+        .eq("new_status", "unfixable")
+        .not("note", "is", null)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        setUnfixableNotes({});
+        setHistoryReadWarning(getHistoryReadFailureMessage(error.message));
+        return;
+      }
+
+      const notes = ((data ?? []) as UnfixableHistoryNote[]).reduce<
+        Record<string, string>
+      >((latest, history) => {
+        if (history.note && !latest[history.issue_id]) {
+          latest[history.issue_id] = history.note;
+        }
+
+        return latest;
+      }, {});
+
+      setUnfixableNotes(notes);
+      setHistoryReadWarning(null);
+    },
+    [supabase],
+  );
+
   const refreshIssues = useCallback(async () => {
     const { data, error } = await fetchIssues();
 
@@ -105,8 +187,10 @@ export default function TechnicianConsolePage() {
       return;
     }
 
-    setIssues((data ?? []) as TechnicianIssue[]);
-  }, [fetchIssues]);
+    const nextIssues = (data ?? []) as TechnicianIssue[];
+    setIssues(nextIssues);
+    await refreshUnfixableNotes(nextIssues);
+  }, [fetchIssues, refreshUnfixableNotes]);
 
   useEffect(() => {
     const loadIssues = async () => {
@@ -118,14 +202,16 @@ export default function TechnicianConsolePage() {
           message: `Could not load technician issues: ${error.message}`,
         });
       } else {
-        setIssues((data ?? []) as TechnicianIssue[]);
+        const nextIssues = (data ?? []) as TechnicianIssue[];
+        setIssues(nextIssues);
+        await refreshUnfixableNotes(nextIssues);
       }
 
       setIsLoading(false);
     };
 
     void loadIssues();
-  }, [fetchIssues]);
+  }, [fetchIssues, refreshUnfixableNotes]);
 
   const assignedIssues = useMemo(
     () =>
@@ -141,6 +227,28 @@ export default function TechnicianConsolePage() {
       selectedTechnician,
     ],
   );
+
+  const activeIssues = useMemo(
+    () =>
+      assignedIssues.filter((issue) => activeStatuses.has(issue.status)),
+    [assignedIssues],
+  );
+
+  const resolutionNotices = useMemo(() => {
+    const acknowledgedIssueIds = new Set(
+      resolutionAcknowledgements[selectedTechnician],
+    );
+
+    return assignedIssues.filter(
+      (issue) =>
+        resolutionStatuses.has(issue.status) &&
+        !acknowledgedIssueIds.has(issue.id),
+    );
+  }, [
+    assignedIssues,
+    resolutionAcknowledgements,
+    selectedTechnician,
+  ]);
 
   const updateIssueStatus = async (
     issue: TechnicianIssue,
@@ -260,17 +368,17 @@ export default function TechnicianConsolePage() {
         <div className="mt-5 grid gap-4">
           {isLoading ? (
             <p className="text-sm text-[#94a3b8]">Loading assigned issues...</p>
-          ) : assignedIssues.length === 0 ? (
+          ) : activeIssues.length === 0 ? (
             <div className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-6 text-center">
               <p className="font-semibold text-[#dbe4ef]">
-                No issues assigned to this technician.
+                No active issues assigned to this technician.
               </p>
               <p className="mt-2 text-sm text-[#94a3b8]">
                 Use an Issue Detail page to create a temporary assignment.
               </p>
             </div>
           ) : (
-            assignedIssues.map((issue) => {
+            activeIssues.map((issue) => {
               const isUpdating = updatingIssueId === issue.id;
 
               return (
@@ -375,6 +483,77 @@ export default function TechnicianConsolePage() {
                 </article>
               );
             })
+          )}
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-5 shadow-xl shadow-black/20">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-white">
+              Resolution Notices
+            </h2>
+            <p className="mt-1 text-xs text-[#94a3b8]">
+              Completed issue outcomes awaiting acknowledgement.
+            </p>
+          </div>
+          <span className="rounded-md border border-white/10 bg-[#070b18] px-2 py-1 text-xs font-bold text-[#cbd5e1]">
+            {resolutionNotices.length}
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-3">
+          {historyReadWarning ? (
+            <p className="rounded-lg border border-[#f59e0b]/45 bg-[#2a1c06] p-3 text-xs font-semibold leading-5 text-[#fde68a]">
+              {historyReadWarning}
+            </p>
+          ) : null}
+          {resolutionNotices.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-4 text-sm text-[#94a3b8]">
+              No resolution notices.
+            </p>
+          ) : (
+            resolutionNotices.map((issue) => (
+              <article
+                className="rounded-lg border border-white/10 bg-[#070b18] p-4"
+                key={issue.id}
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm text-[#dbe4ef]">
+                      <IssueIdentifiers
+                        channelNumber={issue.channel_number}
+                        cueValue={issue.cue_value}
+                        issueType={issue.issue_type}
+                      />
+                    </p>
+                    <span
+                      className={`mt-2 inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${getIssueStatusClassName(issue.status)}`}
+                    >
+                      {formatIssueLabel(issue.status)}
+                    </span>
+                    {issue.status === "unfixable" ? (
+                      <p className="mt-3 text-sm italic leading-6 text-[#cbd5e1]">
+                        {unfixableNotes[issue.id] ??
+                          "No unfixable note provided."}
+                      </p>
+                    ) : null}
+                  </div>
+                  <button
+                    className="rounded-md border border-[#8b5cf6]/45 bg-[#1b1235] px-3 py-2 text-xs font-semibold text-[#d8c8ff] transition hover:border-[#a78bfa]"
+                    onClick={() =>
+                      acknowledgeResolutionNotice(
+                        selectedTechnician,
+                        issue.id,
+                      )
+                    }
+                    type="button"
+                  >
+                    Acknowledge & Remove
+                  </button>
+                </div>
+              </article>
+            ))
           )}
         </div>
       </section>
