@@ -27,8 +27,10 @@ import {
   type ActiveContinuitySession,
   useActiveContinuitySession,
 } from "@/components/active-continuity-session";
+import type { ScriptAdapterKey } from "@/lib/script-adapters";
 
 type ShowMode = "scripted" | "manual";
+type FiringSystem = ScriptAdapterKey;
 
 type ShowRecord = {
   id: string;
@@ -37,6 +39,10 @@ type ShowRecord = {
   location: string | null;
   show_date: string | null;
   show_mode: ShowMode;
+  firing_system: FiringSystem | null;
+  script_adapter: ScriptAdapterKey | null;
+  script_filename: string | null;
+  script_uploaded_at: string | null;
   status: string | null;
   created_by_user_id: string | null;
   created_at: string | null;
@@ -50,6 +56,10 @@ type ContinuitySessionRecord = ActiveContinuitySession & {
 const fieldClassName =
   "rounded-lg border border-[#334155] bg-[#020617] px-3 py-3 text-base font-semibold text-white placeholder:text-[#94a3b8] focus:border-[#8b5cf6] focus:outline-none focus:ring-2 focus:ring-[#4c00a4]/60";
 
+const firingSystemLabels: Record<FiringSystem, string> = {
+  cobra_6x: "COBRA 6.X",
+};
+
 function formatShowDate(showDate: string | null) {
   if (!showDate) {
     return "Date not set";
@@ -60,6 +70,17 @@ function formatShowDate(showDate: string | null) {
     month: "short",
     year: "numeric",
   }).format(new Date(`${showDate}T00:00:00`));
+}
+
+function formatScriptTimestamp(uploadedAt: string | null) {
+  if (!uploadedAt) {
+    return "Not uploaded";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(uploadedAt));
 }
 
 function writeActiveShow(show: ActiveShow | null) {
@@ -85,6 +106,14 @@ export function ShowsWorkspace() {
   const [showMode, setShowMode] = useState<ShowMode>("scripted");
   const [showDate, setShowDate] = useState("");
   const [location, setLocation] = useState("");
+  const [firingSystem, setFiringSystem] = useState<FiringSystem | "">("");
+  const [newShowScriptFile, setNewShowScriptFile] = useState<File | null>(
+    null,
+  );
+  const [scriptFiles, setScriptFiles] = useState<Record<string, File | null>>(
+    {},
+  );
+  const [updatingShowId, setUpdatingShowId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -99,7 +128,7 @@ export function ShowsWorkspace() {
     return supabase
       .from("shows")
       .select(
-        "id, company_id, name, location, show_date, show_mode, status, created_by_user_id, created_at, updated_at",
+        "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
       )
       .order("created_at", { ascending: false });
   }, [supabase]);
@@ -193,13 +222,20 @@ export function ShowsWorkspace() {
     const { data, error } = await supabase
       .from("shows")
       .insert({
+        firing_system: firingSystem || null,
         location: location.trim() || null,
         name: trimmedName,
+        script_adapter:
+          firingSystem && newShowScriptFile ? firingSystem : null,
+        script_filename: newShowScriptFile?.name ?? null,
+        script_uploaded_at: newShowScriptFile
+          ? new Date().toISOString()
+          : null,
         show_date: showDate || null,
         show_mode: showMode,
       })
       .select(
-        "id, company_id, name, location, show_date, show_mode, status, created_by_user_id, created_at, updated_at",
+        "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
       )
       .single();
 
@@ -212,6 +248,8 @@ export function ShowsWorkspace() {
       setShowMode("scripted");
       setShowDate("");
       setLocation("");
+      setFiringSystem("");
+      setNewShowScriptFile(null);
       setMessage(`Created show: ${createdShow.name}`);
     }
 
@@ -223,6 +261,10 @@ export function ShowsWorkspace() {
       id: show.id,
       name: show.name,
       show_mode: show.show_mode,
+      firing_system: show.firing_system,
+      script_adapter: show.script_adapter,
+      script_filename: show.script_filename,
+      script_uploaded_at: show.script_uploaded_at,
     };
 
     if (activeShow?.id !== show.id) {
@@ -235,6 +277,82 @@ export function ShowsWorkspace() {
   const handleClearActiveShow = () => {
     setActiveContinuitySession(null);
     writeActiveShow(null);
+  };
+
+  const applyUpdatedShow = (updatedShow: ShowRecord) => {
+    setShows((currentShows) =>
+      currentShows.map((show) =>
+        show.id === updatedShow.id ? updatedShow : show,
+      ),
+    );
+
+    if (activeShow?.id === updatedShow.id) {
+      handleSetActiveShow(updatedShow);
+    }
+  };
+
+  const handleUpdateFiringSystem = async (
+    show: ShowRecord,
+    nextFiringSystem: FiringSystem | "",
+  ) => {
+    setUpdatingShowId(show.id);
+    setMessage(null);
+
+    const { data, error } = await supabase
+      .from("shows")
+      .update({ firing_system: nextFiringSystem || null })
+      .eq("id", show.id)
+      .select(
+        "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+      )
+      .single();
+
+    if (error) {
+      setMessage(`Could not update firing system: ${error.message}`);
+    } else {
+      applyUpdatedShow(data as ShowRecord);
+      setMessage(`Updated firing system for ${show.name}.`);
+    }
+
+    setUpdatingShowId(null);
+  };
+
+  const handleSaveScriptMetadata = async (show: ShowRecord) => {
+    const scriptFile = scriptFiles[show.id];
+
+    if (!show.firing_system || !scriptFile) {
+      setMessage("Select a script file before saving its metadata.");
+      return;
+    }
+
+    setUpdatingShowId(show.id);
+    setMessage(null);
+
+    const { data, error } = await supabase
+      .from("shows")
+      .update({
+        script_adapter: show.firing_system,
+        script_filename: scriptFile.name,
+        script_uploaded_at: new Date().toISOString(),
+      })
+      .eq("id", show.id)
+      .select(
+        "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+      )
+      .single();
+
+    if (error) {
+      setMessage(`Could not save script metadata: ${error.message}`);
+    } else {
+      applyUpdatedShow(data as ShowRecord);
+      setScriptFiles((currentFiles) => ({
+        ...currentFiles,
+        [show.id]: null,
+      }));
+      setMessage(`Saved script metadata for ${show.name}.`);
+    }
+
+    setUpdatingShowId(null);
   };
 
   const handleStartSession = async (
@@ -441,6 +559,14 @@ export function ShowsWorkspace() {
                             {show.show_mode} | {formatShowDate(show.show_date)}
                             {show.location ? ` | ${show.location}` : ""}
                           </p>
+                          <p className="mt-2 text-sm text-[#cbd5e1]">
+                            Firing System:{" "}
+                            <strong className="text-white">
+                              {show.firing_system
+                                ? firingSystemLabels[show.firing_system]
+                                : "Not selected"}
+                            </strong>
+                          </p>
                           <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[#64748b]">
                             Status: {show.status ?? "not set"}
                           </p>
@@ -452,6 +578,91 @@ export function ShowsWorkspace() {
                         >
                           {isActive ? "Active" : "Set Active Show"}
                         </button>
+                      </div>
+                      <div className="mt-4 grid gap-3 border-t border-white/10 pt-4">
+                        <label className="grid gap-2 text-sm font-semibold text-[#dbe4ef]">
+                          Firing System
+                          <select
+                            className={fieldClassName}
+                            disabled={updatingShowId === show.id}
+                            onChange={(event) =>
+                              void handleUpdateFiringSystem(
+                                show,
+                                event.target.value as FiringSystem | "",
+                              )
+                            }
+                            value={show.firing_system ?? ""}
+                          >
+                            <option value="">Not selected</option>
+                            <option value="cobra_6x">COBRA 6.X</option>
+                          </select>
+                        </label>
+
+                        {show.firing_system ? (
+                          <div className="rounded-lg border border-[#8b5cf6]/25 bg-[#130a2b]/55 p-4">
+                            <div className="flex flex-col gap-1">
+                              <p className="text-sm font-semibold text-white">
+                                Script Upload
+                              </p>
+                              <p className="text-xs leading-5 text-[#94a3b8]">
+                                Metadata is stored in Supabase. File parsing and
+                                content storage are not implemented yet.
+                              </p>
+                            </div>
+                            <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+                              <div>
+                                <dt className="text-[#64748b]">Filename</dt>
+                                <dd className="mt-1 font-semibold text-[#dbe4ef]">
+                                  {show.script_filename ?? "None"}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-[#64748b]">Uploaded</dt>
+                                <dd className="mt-1 font-semibold text-[#dbe4ef]">
+                                  {formatScriptTimestamp(
+                                    show.script_uploaded_at,
+                                  )}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-[#64748b]">Adapter</dt>
+                                <dd className="mt-1 font-semibold text-[#dbe4ef]">
+                                  {show.script_adapter ?? "None"}
+                                </dd>
+                              </div>
+                            </dl>
+                            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+                              <label className="grid min-w-0 flex-1 gap-2 text-xs font-semibold text-[#cbd5e1]">
+                                Select Script File
+                                <input
+                                  accept=".csv,text/csv"
+                                  className="block w-full text-sm text-[#cbd5e1] file:mr-3 file:rounded-md file:border-0 file:bg-[#4c00a4] file:px-3 file:py-2 file:font-semibold file:text-white"
+                                  onChange={(event) =>
+                                    setScriptFiles((currentFiles) => ({
+                                      ...currentFiles,
+                                      [show.id]:
+                                        event.target.files?.[0] ?? null,
+                                    }))
+                                  }
+                                  type="file"
+                                />
+                              </label>
+                              <button
+                                className="rounded-md bg-[#6d28d9] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                disabled={
+                                  updatingShowId === show.id ||
+                                  !scriptFiles[show.id]
+                                }
+                                onClick={() =>
+                                  void handleSaveScriptMetadata(show)
+                                }
+                                type="button"
+                              >
+                                Save Script Metadata
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </article>
                   );
@@ -512,6 +723,27 @@ export function ShowsWorkspace() {
             </div>
             <label className="flex flex-col gap-2">
               <span className="text-sm font-semibold text-[#dbe4ef]">
+                Firing System
+              </span>
+              <select
+                className={fieldClassName}
+                onChange={(event) => {
+                  setFiringSystem(
+                    event.target.value as FiringSystem | "",
+                  );
+
+                  if (!event.target.value) {
+                    setNewShowScriptFile(null);
+                  }
+                }}
+                value={firingSystem}
+              >
+                <option value="">Not selected</option>
+                <option value="cobra_6x">COBRA 6.X</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-semibold text-[#dbe4ef]">
                 Location
               </span>
               <input
@@ -522,15 +754,25 @@ export function ShowsWorkspace() {
                 value={location}
               />
             </label>
-            <div className="rounded-lg border border-dashed border-[#475569] bg-[#070b18] px-4 py-6">
-              <p className="text-base font-semibold text-white">
-                Script upload placeholder
-              </p>
-              <p className="mt-2 text-sm leading-6 text-[#94a3b8]">
-                Script upload is not implemented yet. Manual shows can proceed
-                without a script upload.
-              </p>
-            </div>
+            {firingSystem ? (
+              <div className="rounded-lg border border-dashed border-[#475569] bg-[#070b18] px-4 py-5">
+                <p className="text-base font-semibold text-white">
+                  Script Upload
+                </p>
+                <p className="mt-2 text-sm leading-6 text-[#94a3b8]">
+                  Select a script to store its filename, upload timestamp, and
+                  COBRA adapter key with the new show. CSV parsing is deferred.
+                </p>
+                <input
+                  accept=".csv,text/csv"
+                  className="mt-4 block w-full text-sm text-[#cbd5e1] file:mr-3 file:rounded-md file:border-0 file:bg-[#4c00a4] file:px-3 file:py-2 file:font-semibold file:text-white"
+                  onChange={(event) =>
+                    setNewShowScriptFile(event.target.files?.[0] ?? null)
+                  }
+                  type="file"
+                />
+              </div>
+            ) : null}
             {message ? (
               <p className="rounded-lg border border-white/10 bg-[#070b18] p-3 text-sm text-[#dbe4ef]">
                 {message}

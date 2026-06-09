@@ -8,6 +8,10 @@ export type ActiveShow = {
   id: string;
   name: string;
   show_mode: "scripted" | "manual";
+  firing_system?: string | null;
+  script_adapter?: string | null;
+  script_filename?: string | null;
+  script_uploaded_at?: string | null;
 };
 
 export const ACTIVE_SHOW_STORAGE_KEY = "pyro-crew-active-show";
@@ -103,7 +107,7 @@ export function ActiveShowStrip() {
           ) : null}
         </p>
         <p className={`text-xs italic ${secondaryTextClassName}`}>
-          Script: No script loaded
+          Script: {activeShow?.script_filename ?? "No script loaded"}
         </p>
       </div>
     </div>
