@@ -121,9 +121,6 @@ export function ShowsWorkspace() {
   );
   const [newShowParseResult, setNewShowParseResult] =
     useState<ScriptParseResult | null>(null);
-  const [scriptFiles, setScriptFiles] = useState<Record<string, File | null>>(
-    {},
-  );
   const [updatingShowId, setUpdatingShowId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -351,52 +348,10 @@ export function ShowsWorkspace() {
     setUpdatingShowId(null);
   };
 
-  const handleSaveScriptMetadata = async (show: ShowRecord) => {
-    const scriptFile = scriptFiles[show.id];
-
-    if (!show.firing_system || !scriptFile) {
-      setMessage("Select a script file before saving its metadata.");
-      return;
-    }
-
-    setUpdatingShowId(show.id);
-    setMessage(null);
-
-    const { data, error } = await supabase
-      .from("shows")
-      .update({
-        script_adapter: show.firing_system,
-        script_filename: scriptFile.name,
-        script_uploaded_at: new Date().toISOString(),
-      })
-      .eq("id", show.id)
-      .select(
-        "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
-      )
-      .single();
-
-    if (error) {
-      setMessage(`Could not save script metadata: ${error.message}`);
-    } else {
-      applyUpdatedShow(data as ShowRecord);
-      setScriptFiles((currentFiles) => ({
-        ...currentFiles,
-        [show.id]: null,
-      }));
-      setMessage(`Saved script metadata for ${show.name}.`);
-    }
-
-    setUpdatingShowId(null);
-  };
-
   const handleSelectExistingScript = async (
     show: ShowRecord,
     file: File | null,
   ) => {
-    setScriptFiles((currentFiles) => ({
-      ...currentFiles,
-      [show.id]: file,
-    }));
     setMessage(null);
 
     if (!file || !show.firing_system) {
@@ -405,16 +360,45 @@ export function ShowsWorkspace() {
 
     try {
       const result = await parseScriptFile(file, show.firing_system);
+
+      if (result.errors.length > 0) {
+        setMessage(`Script import failed: ${result.errors.join(" ")}`);
+        return;
+      }
+
       saveParsedScript(show.id, show.firing_system, file.name, result);
-      setMessage(
-        `Parsed ${result.rows.length} script rows for ${show.name}.`,
-      );
+
+      setUpdatingShowId(show.id);
+      const { data, error } = await supabase
+        .from("shows")
+        .update({
+          firing_system: show.firing_system,
+          script_adapter: show.firing_system,
+          script_filename: file.name,
+          script_uploaded_at: new Date().toISOString(),
+        })
+        .eq("id", show.id)
+        .select(
+          "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+        )
+        .single();
+
+      if (error) {
+        setMessage(`Script metadata save failed: ${error.message}`);
+      } else {
+        applyUpdatedShow(data as ShowRecord);
+        setMessage(
+          `Script imported successfully. ${result.rows.length} events parsed.`,
+        );
+      }
     } catch (error) {
       setMessage(
         `Could not parse script: ${
           error instanceof Error ? error.message : "Unknown parser error"
         }`,
       );
+    } finally {
+      setUpdatingShowId(null);
     }
   };
 
@@ -689,8 +673,9 @@ export function ShowsWorkspace() {
                                 Script Upload
                               </p>
                               <p className="text-xs leading-5 text-[#94a3b8]">
-                                Metadata is stored in Supabase. File parsing and
-                                content storage are not implemented yet.
+                                CSV events are parsed and stored locally for this
+                                MVP. Script metadata is saved to Supabase
+                                automatically after a successful import.
                               </p>
                             </div>
                             <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
@@ -724,7 +709,7 @@ export function ShowsWorkspace() {
                             {parsedScript ? (
                               <ScriptParseSummary result={parsedScript} />
                             ) : null}
-                            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+                            <div className="mt-4">
                               <label className="grid min-w-0 flex-1 gap-2 text-xs font-semibold text-[#cbd5e1]">
                                 Select Script File
                                 <input
@@ -739,19 +724,6 @@ export function ShowsWorkspace() {
                                   type="file"
                                 />
                               </label>
-                              <button
-                                className="rounded-md bg-[#6d28d9] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                                disabled={
-                                  updatingShowId === show.id ||
-                                  !scriptFiles[show.id]
-                                }
-                                onClick={() =>
-                                  void handleSaveScriptMetadata(show)
-                                }
-                                type="button"
-                              >
-                                Save Script Metadata
-                              </button>
                             </div>
                           </div>
                         ) : null}
@@ -853,8 +825,9 @@ export function ShowsWorkspace() {
                   Script Upload
                 </p>
                 <p className="mt-2 text-sm leading-6 text-[#94a3b8]">
-                  Select a script to store its filename, upload timestamp, and
-                  COBRA adapter key with the new show. CSV parsing is deferred.
+                  Select a script to parse its events locally and save its
+                  filename, upload timestamp, and COBRA adapter key with the new
+                  show.
                 </p>
                 <input
                   accept=".csv,text/csv"

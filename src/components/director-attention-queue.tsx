@@ -28,6 +28,7 @@ type AttentionIssue = {
   cue_value: string;
   issue_type: string;
   position_name: string | null;
+  effect_name: string | null;
   status: AttentionStatus;
   created_at: string | null;
   attention_entered_at: string | null;
@@ -93,7 +94,7 @@ export function DirectorAttentionQueue({
     const { data, error } = await supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, position_name, status, created_at",
+        "id, channel_number, cue_value, issue_type, position_name, effect_name, status, created_at",
       )
       .eq("show_id", activeShow.id)
       .in("status", attentionStatuses);
@@ -335,6 +336,11 @@ export function DirectorAttentionQueue({
                 {issue.position_name ? (
                   <p className="mt-1 text-xs text-[#cbd5e1]">
                     Position: {issue.position_name}
+                  </p>
+                ) : null}
+                {issue.effect_name ? (
+                  <p className="mt-1 text-xs text-[#cbd5e1]">
+                    Effect: {issue.effect_name}
                   </p>
                 ) : null}
                 {issue.latest_note ? (

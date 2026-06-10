@@ -565,9 +565,13 @@ export default function TechnicianConsolePage() {
         </div>
 
         <div className="mt-5 flex flex-wrap gap-2 border-t border-white/10 pt-4">
-          {STATUS_ACTIONS.filter(
-            (action) => action.status !== issue.status,
-          ).map((action) => (
+          {STATUS_ACTIONS.filter((action) => {
+            if (issue.status === "in_progress") {
+              return action.status !== "in_progress";
+            }
+
+            return action.status === "in_progress";
+          }).map((action) => (
             <button
               key={action.status}
               type="button"

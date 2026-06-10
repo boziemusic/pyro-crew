@@ -1296,6 +1296,11 @@ export default function DirectorConsolePage() {
                       Position: {latestIssue.position_name}
                     </p>
                   ) : null}
+                  {latestIssue.effect_name ? (
+                    <p className="mt-1 text-xs text-[#94a3b8]">
+                      Effect: {latestIssue.effect_name}
+                    </p>
+                  ) : null}
                 </Link>
               )}
             </div>
