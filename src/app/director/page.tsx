@@ -16,6 +16,10 @@ import {
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import { DirectorAttentionQueue } from "@/components/director-attention-queue";
+import {
+  findParsedScriptRow,
+  useParsedScripts,
+} from "@/components/parsed-script-store";
 import { useShowPositions } from "@/components/position-store";
 import { createTemporaryHandoff } from "@/components/temporary-handoff-store";
 import {
@@ -210,6 +214,7 @@ export default function DirectorConsolePage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const activeShow = useActiveShow();
   const showPositions = useShowPositions(activeShow?.id);
+  const parsedScripts = useParsedScripts();
   const activeSession = useActiveContinuitySession();
   const sessionForActiveShow =
     activeSession?.show_id === activeShow?.id ? activeSession : null;
@@ -279,6 +284,25 @@ export default function DirectorConsolePage() {
       ),
     [showPositions.groups],
   );
+  const parsedScript = activeShow ? parsedScripts[activeShow.id] : null;
+  const hasParsedScript = Boolean(parsedScript?.rows.length);
+  const cueIsRange = /^\s*\d+\s*-\s*\d+\s*$/.test(cueValue);
+  const resolvedScriptRow = useMemo(() => {
+    if (
+      !parsedScript ||
+      !channelNumber ||
+      !cueValue.trim() ||
+      cueIsRange
+    ) {
+      return null;
+    }
+
+    return findParsedScriptRow(
+      parsedScript.rows,
+      Number(channelNumber),
+      cueValue,
+    );
+  }, [channelNumber, cueIsRange, cueValue, parsedScript]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -929,16 +953,20 @@ export default function DirectorConsolePage() {
       (position) => position.id === selectedPositionId,
     );
     const submittedPositionName =
-      selectedPosition?.name ?? (isManual ? positionName.trim() : "");
+      resolvedScriptRow?.position_name ??
+      (!hasParsedScript
+        ? selectedPosition?.name ?? (isManual ? positionName.trim() : "")
+        : "");
+    const submittedEffectName = resolvedScriptRow?.effect_name ?? null;
 
-    // TODO(script parsing): when parsed script data exists, its derived
-    // position should supersede any manual position dropdown selection.
+    // Parsed script position supersedes manual selection. Future adapters may
+    // add richer matching and multi-cue resolution.
     const insertValues = {
       assigned_to_user_id: null,
       channel_number: Number(channelNumber),
       created_by_user_id: null,
       cue_value: cueValue.trim(),
-      effect_name: null,
+      effect_name: submittedEffectName,
       issue_source: "manual_director_entry",
       issue_type: issueType,
       session_id: sessionForActiveShow?.id ?? null,
@@ -1057,7 +1085,7 @@ export default function DirectorConsolePage() {
               </h2>
               <p className="text-sm leading-6 text-[#94a3b8]">
                 {isScripted
-                  ? "Position and effect will later resolve from imported script data."
+                  ? "Position and effect resolve from parsed script data when a matching row is available."
                   : "Position is optional for manual shows."}
               </p>
             </div>
@@ -1065,7 +1093,8 @@ export default function DirectorConsolePage() {
             <div className="mt-6 grid gap-5">
               <div
                 className={`grid gap-4 ${
-                  isManual || showPositions.positions.length > 0
+                  !hasParsedScript &&
+                  (isManual || showPositions.positions.length > 0)
                     ? "sm:grid-cols-2 xl:grid-cols-4"
                     : "sm:grid-cols-3"
                 }`}
@@ -1096,7 +1125,7 @@ export default function DirectorConsolePage() {
                     value={cueValue}
                   />
                 </label>
-                {showPositions.positions.length > 0 ? (
+                {!hasParsedScript && showPositions.positions.length > 0 ? (
                   <label className="flex flex-col gap-2">
                     <span className="text-sm font-semibold text-[#dbe4ef]">
                       Position
@@ -1120,7 +1149,7 @@ export default function DirectorConsolePage() {
                       ))}
                     </select>
                   </label>
-                ) : isManual ? (
+                ) : !hasParsedScript && isManual ? (
                   <label className="flex flex-col gap-2">
                     <span className="text-sm font-semibold text-[#dbe4ef]">
                       Position
@@ -1156,6 +1185,39 @@ export default function DirectorConsolePage() {
                   </select>
                 </label>
               </div>
+
+              {hasParsedScript && channelNumber && cueValue.trim() ? (
+                cueIsRange ? (
+                  <p className="rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-sm font-semibold text-[#fde68a]">
+                    Script lookup supports single cues only for MVP.
+                  </p>
+                ) : resolvedScriptRow ? (
+                  <div className="rounded-lg border border-[#22c55e]/35 bg-[#082515] p-3">
+                    <p className="text-sm font-semibold text-[#bbf7d0]">
+                      Script row resolved
+                    </p>
+                    <dl className="mt-2 grid gap-2 text-sm sm:grid-cols-2">
+                      <div>
+                        <dt className="text-[#94a3b8]">Position</dt>
+                        <dd className="font-semibold text-white">
+                          {resolvedScriptRow.position_name ?? "Not provided"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[#94a3b8]">Effect</dt>
+                        <dd className="font-semibold text-white">
+                          {resolvedScriptRow.effect_name ?? "Not provided"}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                ) : (
+                  <p className="rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-sm font-semibold text-[#fde68a]">
+                    No matching script row found for CH {channelNumber} Cue{" "}
+                    {cueValue.trim()}.
+                  </p>
+                )
+              ) : null}
 
               {createdIssue ? (
                 <p className="rounded-lg border border-[#2f6b51]/70 bg-[#0d251c]/95 p-3 text-sm font-semibold text-[#d8f3e3]">

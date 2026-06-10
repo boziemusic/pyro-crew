@@ -27,7 +27,15 @@ import {
   type ActiveContinuitySession,
   useActiveContinuitySession,
 } from "@/components/active-continuity-session";
-import type { ScriptAdapterKey } from "@/lib/script-adapters";
+import {
+  saveParsedScript,
+  useParsedScripts,
+} from "@/components/parsed-script-store";
+import {
+  SCRIPT_ADAPTERS,
+  type ScriptAdapterKey,
+  type ScriptParseResult,
+} from "@/lib/script-adapters";
 
 type ShowMode = "scripted" | "manual";
 type FiringSystem = ScriptAdapterKey;
@@ -95,6 +103,7 @@ function writeActiveShow(show: ActiveShow | null) {
 
 export function ShowsWorkspace() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
+  const parsedScripts = useParsedScripts();
   const [shows, setShows] = useState<ShowRecord[]>([]);
   const activeShow = useSyncExternalStore(
     subscribeToActiveShowStore,
@@ -110,6 +119,8 @@ export function ShowsWorkspace() {
   const [newShowScriptFile, setNewShowScriptFile] = useState<File | null>(
     null,
   );
+  const [newShowParseResult, setNewShowParseResult] =
+    useState<ScriptParseResult | null>(null);
   const [scriptFiles, setScriptFiles] = useState<Record<string, File | null>>(
     {},
   );
@@ -123,6 +134,14 @@ export function ShowsWorkspace() {
   const [sessionName, setSessionName] = useState("");
   const [isStartingSession, setIsStartingSession] = useState(false);
   const [sessionMessage, setSessionMessage] = useState<string | null>(null);
+
+  const parseScriptFile = async (
+    file: File,
+    adapterKey: ScriptAdapterKey,
+  ) => {
+    const contents = await file.text();
+    return SCRIPT_ADAPTERS[adapterKey].parse(contents);
+  };
 
   const fetchShows = useCallback(async () => {
     return supabase
@@ -218,6 +237,12 @@ export function ShowsWorkspace() {
     }
 
     setIsCreating(true);
+    let parsedResult = newShowParseResult;
+
+    if (firingSystem && newShowScriptFile) {
+      parsedResult = await parseScriptFile(newShowScriptFile, firingSystem);
+      setNewShowParseResult(parsedResult);
+    }
 
     const { data, error } = await supabase
       .from("shows")
@@ -243,6 +268,14 @@ export function ShowsWorkspace() {
       setMessage(`Could not create show: ${error.message}`);
     } else if (data) {
       const createdShow = data as ShowRecord;
+      if (firingSystem && newShowScriptFile && parsedResult) {
+        saveParsedScript(
+          createdShow.id,
+          firingSystem,
+          newShowScriptFile.name,
+          parsedResult,
+        );
+      }
       setShows((currentShows) => [createdShow, ...currentShows]);
       setName("");
       setShowMode("scripted");
@@ -250,6 +283,7 @@ export function ShowsWorkspace() {
       setLocation("");
       setFiringSystem("");
       setNewShowScriptFile(null);
+      setNewShowParseResult(null);
       setMessage(`Created show: ${createdShow.name}`);
     }
 
@@ -353,6 +387,55 @@ export function ShowsWorkspace() {
     }
 
     setUpdatingShowId(null);
+  };
+
+  const handleSelectExistingScript = async (
+    show: ShowRecord,
+    file: File | null,
+  ) => {
+    setScriptFiles((currentFiles) => ({
+      ...currentFiles,
+      [show.id]: file,
+    }));
+    setMessage(null);
+
+    if (!file || !show.firing_system) {
+      return;
+    }
+
+    try {
+      const result = await parseScriptFile(file, show.firing_system);
+      saveParsedScript(show.id, show.firing_system, file.name, result);
+      setMessage(
+        `Parsed ${result.rows.length} script rows for ${show.name}.`,
+      );
+    } catch (error) {
+      setMessage(
+        `Could not parse script: ${
+          error instanceof Error ? error.message : "Unknown parser error"
+        }`,
+      );
+    }
+  };
+
+  const handleSelectNewShowScript = async (file: File | null) => {
+    setNewShowScriptFile(file);
+    setNewShowParseResult(null);
+    setMessage(null);
+
+    if (!file || !firingSystem) {
+      return;
+    }
+
+    try {
+      setNewShowParseResult(await parseScriptFile(file, firingSystem));
+    } catch (error) {
+      setMessage(
+        `Could not parse script: ${
+          error instanceof Error ? error.message : "Unknown parser error"
+        }`,
+      );
+    }
   };
 
   const handleStartSession = async (
@@ -540,6 +623,7 @@ export function ShowsWorkspace() {
               ) : (
                 shows.map((show) => {
                   const isActive = activeShow?.id === show.id;
+                  const parsedScript = parsedScripts[show.id];
 
                   return (
                     <article
@@ -630,7 +714,16 @@ export function ShowsWorkspace() {
                                   {show.script_adapter ?? "None"}
                                 </dd>
                               </div>
+                              <div>
+                                <dt className="text-[#64748b]">Parsed Rows</dt>
+                                <dd className="mt-1 font-semibold text-[#dbe4ef]">
+                                  {parsedScript?.rows.length ?? 0}
+                                </dd>
+                              </div>
                             </dl>
+                            {parsedScript ? (
+                              <ScriptParseSummary result={parsedScript} />
+                            ) : null}
                             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
                               <label className="grid min-w-0 flex-1 gap-2 text-xs font-semibold text-[#cbd5e1]">
                                 Select Script File
@@ -638,11 +731,10 @@ export function ShowsWorkspace() {
                                   accept=".csv,text/csv"
                                   className="block w-full text-sm text-[#cbd5e1] file:mr-3 file:rounded-md file:border-0 file:bg-[#4c00a4] file:px-3 file:py-2 file:font-semibold file:text-white"
                                   onChange={(event) =>
-                                    setScriptFiles((currentFiles) => ({
-                                      ...currentFiles,
-                                      [show.id]:
-                                        event.target.files?.[0] ?? null,
-                                    }))
+                                    void handleSelectExistingScript(
+                                      show,
+                                      event.target.files?.[0] ?? null,
+                                    )
                                   }
                                   type="file"
                                 />
@@ -734,6 +826,7 @@ export function ShowsWorkspace() {
 
                   if (!event.target.value) {
                     setNewShowScriptFile(null);
+                    setNewShowParseResult(null);
                   }
                 }}
                 value={firingSystem}
@@ -767,10 +860,15 @@ export function ShowsWorkspace() {
                   accept=".csv,text/csv"
                   className="mt-4 block w-full text-sm text-[#cbd5e1] file:mr-3 file:rounded-md file:border-0 file:bg-[#4c00a4] file:px-3 file:py-2 file:font-semibold file:text-white"
                   onChange={(event) =>
-                    setNewShowScriptFile(event.target.files?.[0] ?? null)
+                    void handleSelectNewShowScript(
+                      event.target.files?.[0] ?? null,
+                    )
                   }
                   type="file"
                 />
+                {newShowParseResult ? (
+                  <ScriptParseSummary result={newShowParseResult} />
+                ) : null}
               </div>
             ) : null}
             {message ? (
@@ -798,6 +896,54 @@ export function ShowsWorkspace() {
           </div>
         </form>
       </section>
+    </div>
+  );
+}
+
+function ScriptParseSummary({ result }: { result: ScriptParseResult }) {
+  return (
+    <div className="mt-4 border-t border-white/10 pt-4">
+      <p className="text-sm font-semibold text-white">
+        Parsed rows: {result.rows.length}
+      </p>
+      {result.errors.length > 0 ? (
+        <ul className="mt-2 grid gap-1 text-xs font-semibold text-[#fecaca]">
+          {result.errors.map((error) => (
+            <li key={error}>Error: {error}</li>
+          ))}
+        </ul>
+      ) : null}
+      {result.warnings.length > 0 ? (
+        <ul className="mt-2 grid gap-1 text-xs font-semibold text-[#fde68a]">
+          {result.warnings.map((warning) => (
+            <li key={warning}>Warning: {warning}</li>
+          ))}
+        </ul>
+      ) : null}
+      {result.rows.length > 0 ? (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[32rem] text-left text-xs">
+            <thead className="border-b border-white/10 uppercase text-[#64748b]">
+              <tr>
+                <th className="py-2 pr-3 font-semibold">CH</th>
+                <th className="px-3 py-2 font-semibold">Cue</th>
+                <th className="px-3 py-2 font-semibold">Position</th>
+                <th className="py-2 pl-3 font-semibold">Effect</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/10 text-[#dbe4ef]">
+              {result.rows.slice(0, 5).map((row, index) => (
+                <tr key={`${row.channel_number}-${row.cue_value}-${index}`}>
+                  <td className="py-2 pr-3">{row.channel_number ?? "-"}</td>
+                  <td className="px-3 py-2">{row.cue_value ?? "-"}</td>
+                  <td className="px-3 py-2">{row.position_name ?? "-"}</td>
+                  <td className="py-2 pl-3">{row.effect_name ?? "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </div>
   );
 }

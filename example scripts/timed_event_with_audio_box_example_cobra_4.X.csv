@@ -1,0 +1,14 @@
+#Trigger Channel,#Trigger Button,#Deadman Button,#Return Channel,#AudioBox Filename,#Script Name,#Disable Firing Button,#Alternate Firing Button
+0,1,,0,audiobox,,,
+#Event Time,#Channel,#Cue,#Firework Name
+00:00.0s,1,1,
+00:10.0s,1,2,
+00:15.0s,1,10,
+00:20.5s,1,3,
+00:23.1s,1,4,
+00:25.8s,1,5,
+00:33.2s,1,6,
+00:38.1s,1,7,
+00:43.1s,1,8,
+00:52.0s,1,9,
+END
