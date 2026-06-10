@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useActiveShow } from "@/components/active-show-strip";
 import {
   formatIssueLabel,
@@ -49,6 +55,11 @@ type AttentionHistory = {
   created_at: string | null;
 };
 
+type PinnedIssue = {
+  id: string;
+  index: number;
+};
+
 const attentionStatuses: AttentionStatus[] = [
   "awaiting_verification",
   "director_assistance_requested",
@@ -90,6 +101,43 @@ export function DirectorAttentionQueue({
   const [updatingIssueId, setUpdatingIssueId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [historyWarning, setHistoryWarning] = useState<string | null>(null);
+  const [pinnedIssue, setPinnedIssue] = useState<PinnedIssue | null>(null);
+  const pinnedIssueRef = useRef<PinnedIssue | null>(null);
+
+  const updatePinnedIssue = useCallback((nextPin: PinnedIssue | null) => {
+    pinnedIssueRef.current = nextPin;
+    setPinnedIssue(nextPin);
+  }, []);
+
+  const applyQueueData = useCallback(
+    (nextIssues: AttentionIssue[]) => {
+      const pin = pinnedIssueRef.current;
+
+      if (!pin) {
+        setIssues(nextIssues);
+        return;
+      }
+
+      const pinnedCard = nextIssues.find((issue) => issue.id === pin.id);
+
+      if (!pinnedCard) {
+        updatePinnedIssue(null);
+        setIssues(nextIssues);
+        return;
+      }
+
+      const orderedIssues = nextIssues.filter(
+        (issue) => issue.id !== pin.id,
+      );
+      orderedIssues.splice(
+        Math.min(pin.index, orderedIssues.length),
+        0,
+        pinnedCard,
+      );
+      setIssues(orderedIssues);
+    },
+    [updatePinnedIssue],
+  );
 
   const fetchQueue = useCallback(async () => {
     if (!activeShow) {
@@ -160,8 +208,8 @@ export function DirectorAttentionQueue({
       return;
     }
 
-    setIssues((data ?? []) as AttentionIssue[]);
-  }, [fetchQueue]);
+    applyQueueData((data ?? []) as AttentionIssue[]);
+  }, [applyQueueData, fetchQueue]);
 
   useEffect(() => {
     const loadQueue = async () => {
@@ -170,7 +218,7 @@ export function DirectorAttentionQueue({
       if (error) {
         setFeedback(`Queue load failed: ${error.message}`);
       } else {
-        setIssues((data ?? []) as AttentionIssue[]);
+        applyQueueData((data ?? []) as AttentionIssue[]);
       }
 
       setIsLoading(false);
@@ -182,7 +230,7 @@ export function DirectorAttentionQueue({
     }, 5000);
 
     return () => window.clearInterval(intervalId);
-  }, [fetchQueue, refreshQueue]);
+  }, [applyQueueData, fetchQueue, refreshQueue]);
 
   const transitionIssue = async (
     issue: AttentionIssue,
@@ -213,6 +261,35 @@ export function DirectorAttentionQueue({
       setFeedback(`Status update failed: ${updateError.message}`);
       setUpdatingIssueId(null);
       return false;
+    }
+
+    const remainsInAttention = attentionStatuses.includes(
+      newStatus as AttentionStatus,
+    );
+
+    if (remainsInAttention) {
+      const currentIndex = issues.findIndex(
+        (currentIssue) => currentIssue.id === issue.id,
+      );
+      updatePinnedIssue({
+        id: issue.id,
+        index: Math.max(currentIndex, 0),
+      });
+      setIssues((currentIssues) =>
+        currentIssues.map((currentIssue) =>
+          currentIssue.id === issue.id
+            ? {
+                ...currentIssue,
+                status: newStatus as AttentionStatus,
+                latest_note:
+                  transitionNote ??
+                  (notFixedNote ? "Not Fixed" : currentIssue.latest_note),
+              }
+            : currentIssue,
+        ),
+      );
+    } else if (pinnedIssueRef.current?.id === issue.id) {
+      updatePinnedIssue(null);
     }
 
     const notFixedHistoryNote = notFixedNote ? "Not Fixed" : null;
@@ -350,7 +427,11 @@ export function DirectorAttentionQueue({
 
             return (
               <article
-                className={`rounded-lg border p-3 shadow-lg ${cardStyles[issue.status]}`}
+                className={`rounded-lg border p-3 shadow-lg ${cardStyles[issue.status]} ${
+                  pinnedIssue?.id === issue.id
+                    ? "ring-1 ring-[#c4b5fd]/45"
+                    : ""
+                }`}
                 key={issue.id}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -362,6 +443,11 @@ export function DirectorAttentionQueue({
                       {originalTechnician}
                     </p>
                   </div>
+                  {pinnedIssue?.id === issue.id ? (
+                    <span className="rounded-md border border-white/10 bg-black/20 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#c4b5fd]">
+                      Updated
+                    </span>
+                  ) : null}
                 </div>
 
                 <p className="mt-3 text-sm text-[#e2e8f0]">

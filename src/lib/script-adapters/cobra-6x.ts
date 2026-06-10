@@ -98,6 +98,7 @@ export function parseCobra6xCsv(contents: string): ScriptParseResult {
   if (records.length === 0) {
     return {
       rows: [],
+      skippedRowCount: 0,
       warnings: [],
       errors: [...errors, "CSV file does not contain any rows."],
     };
@@ -117,6 +118,7 @@ export function parseCobra6xCsv(contents: string): ScriptParseResult {
   if (eventHeaderIndex < 0) {
     return {
       rows: [],
+      skippedRowCount: 0,
       warnings: [],
       errors: [
         ...errors,
@@ -133,9 +135,8 @@ export function parseCobra6xCsv(contents: string): ScriptParseResult {
   const cueIndex = normalizedHeaders.indexOf("cue");
   const descriptionIndex = normalizedHeaders.indexOf("eventdescription");
 
-  const rows = records
-    .slice(eventHeaderIndex + 1)
-    .map<ParsedScriptRow>((record) => {
+  const eventRecords = records.slice(eventHeaderIndex + 1);
+  const parsedRows = eventRecords.map<ParsedScriptRow>((record) => {
     const rawRow = Object.fromEntries(
       rawHeaders.map((header, index) => [header, record[index]?.trim() ?? ""]),
     );
@@ -154,8 +155,20 @@ export function parseCobra6xCsv(contents: string): ScriptParseResult {
       raw_row: rawRow,
     };
   });
+  const rows = parsedRows.filter(
+    (row) => row.channel_number !== null && row.cue_value !== null,
+  );
+  const skippedRowCount = parsedRows.length - rows.length;
+  const warnings =
+    skippedRowCount > 0
+      ? [`Skipped ${skippedRowCount} blank or invalid script row(s).`]
+      : [];
+  const resultErrors =
+    rows.length === 0
+      ? [...errors, "COBRA script does not contain any valid event rows."]
+      : errors;
 
-  return { rows, warnings: [], errors };
+  return { rows, skippedRowCount, warnings, errors: resultErrors };
 }
 
 export const cobra6xAdapter: ScriptAdapter = {

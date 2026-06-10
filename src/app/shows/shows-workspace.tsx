@@ -25,11 +25,6 @@ import {
   type ActiveContinuitySession,
   useActiveContinuitySession,
 } from "@/components/active-continuity-session";
-import {
-  removeParsedScript,
-  saveParsedScript,
-  useParsedScripts,
-} from "@/components/parsed-script-store";
 import { deleteShowPositionData } from "@/components/position-store";
 import { removeResolutionNoticeAcknowledgements } from "@/components/resolution-notice-store";
 import { removeTemporaryHandoffsForShow } from "@/components/temporary-handoff-store";
@@ -39,6 +34,12 @@ import {
   type ScriptAdapterKey,
   type ScriptParseResult,
 } from "@/lib/script-adapters";
+import {
+  fetchScriptEventPreview,
+  replaceScriptEvents,
+  restoreScriptEvents,
+  type ScriptEventRow,
+} from "@/lib/script-events";
 
 type ShowMode = "scripted" | "manual";
 type FiringSystem = ScriptAdapterKey;
@@ -64,6 +65,11 @@ type ShowRecord = {
 type ContinuitySessionRecord = ActiveContinuitySession & {
   ended_at: string | null;
   created_at?: string | null;
+};
+
+type ScriptEventPreview = {
+  count: number;
+  rows: ScriptEventRow[];
 };
 
 const fieldClassName =
@@ -120,7 +126,6 @@ function writeActiveShow(show: ActiveShow | null) {
 export function ShowsWorkspace() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const router = useRouter();
-  const parsedScripts = useParsedScripts();
   const [shows, setShows] = useState<ShowRecord[]>([]);
   const activeShow = useSyncExternalStore(
     subscribeToActiveShowStore,
@@ -154,6 +159,14 @@ export function ShowsWorkspace() {
   const [librarySessionErrors, setLibrarySessionErrors] = useState<
     Record<string, string>
   >({});
+  const [scriptEventPreviews, setScriptEventPreviews] = useState<
+    Record<string, ScriptEventPreview>
+  >({});
+  const [scriptEventPreviewErrors, setScriptEventPreviewErrors] = useState<
+    Record<string, string>
+  >({});
+  const [loadingScriptEventShowId, setLoadingScriptEventShowId] =
+    useState<string | null>(null);
   const [previousSessions, setPreviousSessions] = useState<
     ContinuitySessionRecord[]
   >([]);
@@ -316,6 +329,37 @@ export function ShowsWorkspace() {
     setIsLoadingSessions(false);
   }
 
+  async function loadScriptEventPreview(showId: string) {
+    setLoadingScriptEventShowId(showId);
+    setScriptEventPreviewErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[showId];
+      return nextErrors;
+    });
+
+    const { data, error, count } = await fetchScriptEventPreview(
+      supabase,
+      showId,
+    );
+
+    if (error) {
+      setScriptEventPreviewErrors((currentErrors) => ({
+        ...currentErrors,
+        [showId]: `Could not load script events: ${error.message}`,
+      }));
+    } else {
+      setScriptEventPreviews((currentPreviews) => ({
+        ...currentPreviews,
+        [showId]: {
+          count: count ?? 0,
+          rows: (data ?? []) as ScriptEventRow[],
+        },
+      }));
+    }
+
+    setLoadingScriptEventShowId(null);
+  }
+
   async function toggleShowDetails(showId: string) {
     if (expandedShowId === showId) {
       setExpandedShowId(null);
@@ -324,40 +368,50 @@ export function ShowsWorkspace() {
 
     setExpandedShowId(showId);
 
-    if (librarySessions[showId]) {
-      return;
+    const requests: Promise<void>[] = [];
+
+    if (!librarySessions[showId]) {
+      requests.push(
+        (async () => {
+          setLoadingLibrarySessionShowId(showId);
+          setLibrarySessionErrors((currentErrors) => {
+            const nextErrors = { ...currentErrors };
+            delete nextErrors[showId];
+            return nextErrors;
+          });
+
+          const { data, error } = await supabase
+            .from("continuity_sessions")
+            .select(
+              "id, show_id, name, status, started_at, ended_at, created_at",
+            )
+            .eq("show_id", showId)
+            .order("started_at", { ascending: false });
+
+          if (error) {
+            setLibrarySessionErrors((currentErrors) => ({
+              ...currentErrors,
+              [showId]: getContinuitySessionPolicyMessage(
+                `Could not load previous continuity sessions: ${error.message}.`,
+              ),
+            }));
+          } else {
+            setLibrarySessions((currentSessions) => ({
+              ...currentSessions,
+              [showId]: (data ?? []) as ContinuitySessionRecord[],
+            }));
+          }
+
+          setLoadingLibrarySessionShowId(null);
+        })(),
+      );
     }
 
-    setLoadingLibrarySessionShowId(showId);
-    setLibrarySessionErrors((currentErrors) => {
-      const nextErrors = { ...currentErrors };
-      delete nextErrors[showId];
-      return nextErrors;
-    });
-
-    const { data, error } = await supabase
-      .from("continuity_sessions")
-      .select(
-        "id, show_id, name, status, started_at, ended_at, created_at",
-      )
-      .eq("show_id", showId)
-      .order("started_at", { ascending: false });
-
-    if (error) {
-      setLibrarySessionErrors((currentErrors) => ({
-        ...currentErrors,
-        [showId]: getContinuitySessionPolicyMessage(
-          `Could not load previous continuity sessions: ${error.message}.`,
-        ),
-      }));
-    } else {
-      setLibrarySessions((currentSessions) => ({
-        ...currentSessions,
-        [showId]: (data ?? []) as ContinuitySessionRecord[],
-      }));
+    if (!scriptEventPreviews[showId]) {
+      requests.push(loadScriptEventPreview(showId));
     }
 
-    setLoadingLibrarySessionShowId(null);
+    await Promise.all(requests);
   }
 
   const handleCreateShow = async (event: FormEvent<HTMLFormElement>) => {
@@ -380,9 +434,27 @@ export function ShowsWorkspace() {
     setIsCreating(true);
     let parsedResult = newShowParseResult;
 
-    if (firingSystem && newShowScriptFile) {
-      parsedResult = await parseScriptFile(newShowScriptFile, firingSystem);
-      setNewShowParseResult(parsedResult);
+    try {
+      if (firingSystem && newShowScriptFile) {
+        parsedResult = await parseScriptFile(newShowScriptFile, firingSystem);
+        setNewShowParseResult(parsedResult);
+
+        if (parsedResult.errors.length > 0) {
+          setMessage(`Script import failed: ${parsedResult.errors.join(" ")}`);
+          setIsCreating(false);
+          return;
+        }
+      }
+    } catch (parseError) {
+      setMessage(
+        `Could not parse script: ${
+          parseError instanceof Error
+            ? parseError.message
+            : "Unknown parser error"
+        }`,
+      );
+      setIsCreating(false);
+      return;
     }
 
     const { data, error } = await supabase
@@ -391,12 +463,9 @@ export function ShowsWorkspace() {
         firing_system: firingSystem || null,
         location: location.trim() || null,
         name: trimmedName,
-        script_adapter:
-          firingSystem && newShowScriptFile ? firingSystem : null,
-        script_filename: newShowScriptFile?.name ?? null,
-        script_uploaded_at: newShowScriptFile
-          ? new Date().toISOString()
-          : null,
+        script_adapter: null,
+        script_filename: null,
+        script_uploaded_at: null,
         show_date: showDate || null,
         show_mode: showMode,
       })
@@ -408,14 +477,78 @@ export function ShowsWorkspace() {
     if (error) {
       setMessage(`Could not create show: ${error.message}`);
     } else if (data) {
-      const createdShow = data as ShowRecord;
+      let createdShow = data as ShowRecord;
+      let importedScriptEventCount: number | null = null;
+      let skippedScriptRowCount = parsedResult?.skippedRowCount ?? 0;
+
       if (firingSystem && newShowScriptFile && parsedResult) {
-        saveParsedScript(
-          createdShow.id,
-          firingSystem,
-          newShowScriptFile.name,
-          parsedResult,
-        );
+        try {
+          const replacement = await replaceScriptEvents(
+            supabase,
+            createdShow.id,
+            parsedResult.rows,
+          );
+          importedScriptEventCount = replacement.insertedRowCount;
+          skippedScriptRowCount += replacement.skippedRowCount;
+
+          const uploadedAt = new Date().toISOString();
+          const { data: updatedShowData, error: metadataError } =
+            await supabase
+              .from("shows")
+              .update({
+                firing_system: firingSystem,
+                script_adapter: firingSystem,
+                script_filename: newShowScriptFile.name,
+                script_uploaded_at: uploadedAt,
+              })
+              .eq("id", createdShow.id)
+              .select(
+                "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+              )
+              .single();
+
+          if (metadataError) {
+            throw new Error(
+              `Script events were stored, but metadata could not be saved: ${metadataError.message}`,
+            );
+          }
+
+          createdShow = updatedShowData as ShowRecord;
+          setScriptEventPreviews((currentPreviews) => ({
+            ...currentPreviews,
+            [createdShow.id]: {
+              count: replacement.insertedRowCount,
+              rows: parsedResult.rows.slice(0, 5).map((row) => ({
+                show_id: createdShow.id,
+                channel_number: row.channel_number as number,
+                cue_value: row.cue_value as string,
+                position_name: row.position_name,
+                effect_name: row.effect_name,
+                raw_row: row.raw_row,
+              })),
+            },
+          }));
+        } catch (scriptError) {
+          const { error: rollbackError } = await supabase
+            .from("shows")
+            .delete()
+            .eq("id", createdShow.id);
+          setMessage(
+            rollbackError
+              ? `Script import failed and the new show could not be rolled back: ${
+                  scriptError instanceof Error
+                    ? scriptError.message
+                    : "Unknown script storage error"
+                }; rollback failed: ${rollbackError.message}`
+              : `Show creation was rolled back because the script import failed: ${
+                  scriptError instanceof Error
+                    ? scriptError.message
+                    : "Unknown script storage error"
+                }`,
+          );
+          setIsCreating(false);
+          return;
+        }
       }
       setShows((currentShows) => [createdShow, ...currentShows]);
       setName("");
@@ -426,7 +559,15 @@ export function ShowsWorkspace() {
       setNewShowScriptFile(null);
       setNewShowParseResult(null);
       setShowsView("landing");
-      setMessage(`Created and activated show: ${createdShow.name}`);
+      setMessage(
+        importedScriptEventCount === null
+          ? `Created and activated show: ${createdShow.name}`
+          : `Created and activated show: ${createdShow.name}. Script imported successfully. ${importedScriptEventCount} events parsed.${
+              skippedScriptRowCount > 0
+                ? ` Skipped ${skippedScriptRowCount} blank or invalid script row(s).`
+                : ""
+            }`,
+      );
       await openSessionOnboarding(createdShow);
     }
 
@@ -489,16 +630,20 @@ export function ShowsWorkspace() {
         return;
       }
 
-      saveParsedScript(show.id, show.firing_system, file.name, result);
-
       setUpdatingShowId(show.id);
+      const replacement = await replaceScriptEvents(
+        supabase,
+        show.id,
+        result.rows,
+      );
+      const uploadedAt = new Date().toISOString();
       const { data, error } = await supabase
         .from("shows")
         .update({
           firing_system: show.firing_system,
           script_adapter: show.firing_system,
           script_filename: file.name,
-          script_uploaded_at: new Date().toISOString(),
+          script_uploaded_at: uploadedAt,
         })
         .eq("id", show.id)
         .select(
@@ -507,11 +652,27 @@ export function ShowsWorkspace() {
         .single();
 
       if (error) {
-        setMessage(`Script metadata save failed: ${error.message}`);
+        const restoreError = await restoreScriptEvents(
+          supabase,
+          show.id,
+          replacement.previousRows,
+        );
+        setMessage(
+          restoreError
+            ? `Script metadata save failed, and previous script events could not be restored: ${error.message}; restore failed: ${restoreError.message}`
+            : `Script metadata save failed. Previous script events were restored: ${error.message}`,
+        );
       } else {
         applyUpdatedShow(data as ShowRecord);
+        await loadScriptEventPreview(show.id);
+        const skippedRowCount =
+          result.skippedRowCount + replacement.skippedRowCount;
         setMessage(
-          `Script imported successfully. ${result.rows.length} events parsed.`,
+          `Script imported successfully. ${replacement.insertedRowCount} events parsed.${
+            skippedRowCount > 0
+              ? ` Skipped ${skippedRowCount} blank or invalid script row(s).`
+              : ""
+          }`,
         );
       }
     } catch (error) {
@@ -615,7 +776,6 @@ export function ShowsWorkspace() {
       return;
     }
 
-    removeParsedScript(show.id);
     deleteShowPositionData(show.id);
     removeTemporaryTechnicianData(issueIds);
     removeTemporaryHandoffsForShow(show.id);
@@ -638,6 +798,16 @@ export function ShowsWorkspace() {
       return nextSessions;
     });
     setLibrarySessionErrors((currentErrors) => {
+      const nextErrors = { ...currentErrors };
+      delete nextErrors[show.id];
+      return nextErrors;
+    });
+    setScriptEventPreviews((currentPreviews) => {
+      const nextPreviews = { ...currentPreviews };
+      delete nextPreviews[show.id];
+      return nextPreviews;
+    });
+    setScriptEventPreviewErrors((currentErrors) => {
       const nextErrors = { ...currentErrors };
       delete nextErrors[show.id];
       return nextErrors;
@@ -873,9 +1043,8 @@ export function ShowsWorkspace() {
                   Script Upload
                 </p>
                 <p className="mt-2 text-sm leading-6 text-[#94a3b8]">
-                  Select a script to parse its events locally and save its
-                  filename, upload timestamp, and COBRA adapter key with the new
-                  show.
+                  Select a script to parse and store its events in Supabase with
+                  the filename, upload timestamp, and COBRA adapter key.
                 </p>
                 <input
                   accept=".csv,text/csv"
@@ -946,10 +1115,12 @@ export function ShowsWorkspace() {
               shows.map((show) => {
                 const isActive = activeShow?.id === show.id;
                 const isExpanded = expandedShowId === show.id;
-                const parsedScript = parsedScripts[show.id];
+                const scriptEventPreview = scriptEventPreviews[show.id];
                 const showSessions = librarySessions[show.id] ?? [];
                 const isLoadingShowSessions =
                   loadingLibrarySessionShowId === show.id;
+                const isLoadingScriptEvents =
+                  loadingScriptEventShowId === show.id;
 
                 return (
                   <article
@@ -1133,8 +1304,8 @@ export function ShowsWorkspace() {
                             Script Upload
                           </p>
                           <p className="mt-1 text-xs leading-5 text-[#94a3b8]">
-                            Events stay local for MVP. Script metadata saves to
-                            Supabase automatically after a successful import.
+                            Parsed events and script metadata save to Supabase
+                            automatically after a successful import.
                           </p>
                           <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-4">
                             <div>
@@ -1160,12 +1331,20 @@ export function ShowsWorkspace() {
                             <div>
                               <dt className="text-[#64748b]">Parsed Rows</dt>
                               <dd className="mt-1 font-semibold text-[#dbe4ef]">
-                                {parsedScript?.rows.length ?? 0}
+                                {isLoadingScriptEvents
+                                  ? "Loading..."
+                                  : scriptEventPreview?.count ?? 0}
                               </dd>
                             </div>
                           </dl>
-                          {parsedScript ? (
-                            <ScriptParseSummary result={parsedScript} />
+                          {scriptEventPreviewErrors[show.id] ? (
+                            <p className="mt-3 text-xs font-semibold leading-5 text-[#fde68a]">
+                              {scriptEventPreviewErrors[show.id]}
+                            </p>
+                          ) : scriptEventPreview ? (
+                            <ScriptEventPreviewTable
+                              rows={scriptEventPreview.rows}
+                            />
                           ) : null}
                           <label className="mt-4 grid gap-2 text-xs font-semibold text-[#cbd5e1]">
                             Select Script File
@@ -1407,6 +1586,37 @@ function ScriptParseSummary({ result }: { result: ScriptParseResult }) {
           </table>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ScriptEventPreviewTable({ rows }: { rows: ScriptEventRow[] }) {
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 overflow-x-auto border-t border-white/10 pt-4">
+      <table className="w-full min-w-[32rem] text-left text-xs">
+        <thead className="border-b border-white/10 uppercase text-[#64748b]">
+          <tr>
+            <th className="py-2 pr-3 font-semibold">CH</th>
+            <th className="px-3 py-2 font-semibold">Cue</th>
+            <th className="px-3 py-2 font-semibold">Position</th>
+            <th className="py-2 pl-3 font-semibold">Effect</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-white/10 text-[#dbe4ef]">
+          {rows.map((row) => (
+            <tr key={row.id ?? `${row.channel_number}-${row.cue_value}`}>
+              <td className="py-2 pr-3">{row.channel_number}</td>
+              <td className="px-3 py-2">{row.cue_value}</td>
+              <td className="px-3 py-2">{row.position_name ?? "-"}</td>
+              <td className="py-2 pl-3">{row.effect_name ?? "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

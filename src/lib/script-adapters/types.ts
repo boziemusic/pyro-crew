@@ -10,6 +10,7 @@ export type ParsedScriptRow = {
 
 export type ScriptParseResult = {
   rows: ParsedScriptRow[];
+  skippedRowCount: number;
   warnings: string[];
   errors: string[];
 };

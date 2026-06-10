@@ -16,10 +16,6 @@ import {
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import { DirectorAttentionQueue } from "@/components/director-attention-queue";
-import {
-  findParsedScriptRow,
-  useParsedScripts,
-} from "@/components/parsed-script-store";
 import { useShowPositions } from "@/components/position-store";
 import { createTemporaryHandoff } from "@/components/temporary-handoff-store";
 import {
@@ -43,6 +39,10 @@ import {
   getHistoryWriteFailureMessage,
 } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
+import {
+  findScriptEvent,
+  type ScriptEventRow,
+} from "@/lib/script-events";
 
 const fieldClassName =
   "rounded-lg border border-[#334155] bg-[#020617] px-3 py-3 text-base font-semibold text-white placeholder:text-[#94a3b8] focus:border-[#8b5cf6] focus:outline-none focus:ring-2 focus:ring-[#4c00a4]/60";
@@ -214,7 +214,6 @@ export default function DirectorConsolePage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const activeShow = useActiveShow();
   const showPositions = useShowPositions(activeShow?.id);
-  const parsedScripts = useParsedScripts();
   const activeSession = useActiveContinuitySession();
   const sessionForActiveShow =
     activeSession?.show_id === activeShow?.id ? activeSession : null;
@@ -232,6 +231,12 @@ export default function DirectorConsolePage() {
   const [positionName, setPositionName] = useState("");
   const [selectedPositionId, setSelectedPositionId] = useState("");
   const [issueType, setIssueType] = useState<IssueType | "">("");
+  const [hasScriptEvents, setHasScriptEvents] = useState(false);
+  const [resolvedScriptRow, setResolvedScriptRow] =
+    useState<ScriptEventRow | null>(null);
+  const [scriptLookupState, setScriptLookupState] = useState<
+    "idle" | "loading" | "found" | "not_found" | "error"
+  >("idle");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdIssue, setCreatedIssue] =
     useState<CreatedIssueFeedback | null>(null);
@@ -284,25 +289,80 @@ export default function DirectorConsolePage() {
       ),
     [showPositions.groups],
   );
-  const parsedScript = activeShow ? parsedScripts[activeShow.id] : null;
-  const hasParsedScript = Boolean(parsedScript?.rows.length);
+  const hasParsedScript = hasScriptEvents;
   const cueIsRange = /^\s*\d+\s*-\s*\d+\s*$/.test(cueValue);
-  const resolvedScriptRow = useMemo(() => {
+
+  useEffect(() => {
+    const loadScriptEventCount = async () => {
+      setResolvedScriptRow(null);
+      setScriptLookupState("idle");
+
+      if (!activeShow) {
+        setHasScriptEvents(false);
+        return;
+      }
+
+      const { count, error } = await supabase
+        .from("script_events")
+        .select("id", { count: "exact", head: true })
+        .eq("show_id", activeShow.id);
+
+      setHasScriptEvents(!error && (count ?? 0) > 0);
+    };
+
+    void loadScriptEventCount();
+  }, [activeShow, supabase]);
+
+  useEffect(() => {
     if (
-      !parsedScript ||
+      !activeShow ||
+      !hasScriptEvents ||
       !channelNumber ||
       !cueValue.trim() ||
       cueIsRange
     ) {
-      return null;
+      return;
     }
 
-    return findParsedScriptRow(
-      parsedScript.rows,
-      Number(channelNumber),
-      cueValue,
-    );
-  }, [channelNumber, cueIsRange, cueValue, parsedScript]);
+    let cancelled = false;
+    const timeoutId = window.setTimeout(async () => {
+      setResolvedScriptRow(null);
+      setScriptLookupState("loading");
+      const { data, error } = await findScriptEvent(
+        supabase,
+        activeShow.id,
+        Number(channelNumber),
+        cueValue,
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      if (error) {
+        setResolvedScriptRow(null);
+        setScriptLookupState("error");
+      } else if (data) {
+        setResolvedScriptRow(data as ScriptEventRow);
+        setScriptLookupState("found");
+      } else {
+        setResolvedScriptRow(null);
+        setScriptLookupState("not_found");
+      }
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    activeShow,
+    channelNumber,
+    cueIsRange,
+    cueValue,
+    hasScriptEvents,
+    supabase,
+  ]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -952,15 +1012,41 @@ export default function DirectorConsolePage() {
 
     setIsSubmitting(true);
 
+    let scriptRowForSubmission = resolvedScriptRow;
+
+    if (hasParsedScript && !cueIsRange) {
+      const { data: scriptEvent, error: scriptEventError } =
+        await findScriptEvent(
+          supabase,
+          activeShow.id,
+          Number(channelNumber),
+          cueValue,
+        );
+
+      if (scriptEventError) {
+        setErrorMessage(
+          `Could not resolve the script event: ${scriptEventError.message}`,
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      scriptRowForSubmission = scriptEvent as ScriptEventRow | null;
+      setResolvedScriptRow(scriptRowForSubmission);
+      setScriptLookupState(
+        scriptRowForSubmission ? "found" : "not_found",
+      );
+    }
+
     const selectedPosition = showPositions.positions.find(
       (position) => position.id === selectedPositionId,
     );
     const submittedPositionName =
-      resolvedScriptRow?.position_name ??
+      scriptRowForSubmission?.position_name ??
       (!hasParsedScript
         ? selectedPosition?.name ?? (isManual ? positionName.trim() : "")
         : "");
-    const submittedEffectName = resolvedScriptRow?.effect_name ?? null;
+    const submittedEffectName = scriptRowForSubmission?.effect_name ?? null;
 
     // Parsed script position supersedes manual selection. Future adapters may
     // add richer matching and multi-cue resolution.
@@ -1194,6 +1280,15 @@ export default function DirectorConsolePage() {
                   <p className="rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-sm font-semibold text-[#fde68a]">
                     Script lookup supports single cues only for MVP.
                   </p>
+                ) : scriptLookupState === "loading" ? (
+                  <p className="rounded-lg border border-white/10 bg-[#070b18] p-3 text-sm font-semibold text-[#94a3b8]">
+                    Looking up script event...
+                  </p>
+                ) : scriptLookupState === "error" ? (
+                  <p className="rounded-lg border border-[#ef4444]/40 bg-[#2a0b13] p-3 text-sm font-semibold text-[#fecaca]">
+                    Script event lookup failed. Check Supabase access and try
+                    again.
+                  </p>
                 ) : resolvedScriptRow ? (
                   <div className="rounded-lg border border-[#22c55e]/35 bg-[#082515] p-3">
                     <p className="text-sm font-semibold text-[#bbf7d0]">
@@ -1214,12 +1309,12 @@ export default function DirectorConsolePage() {
                       </div>
                     </dl>
                   </div>
-                ) : (
+                ) : scriptLookupState === "not_found" ? (
                   <p className="rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-sm font-semibold text-[#fde68a]">
                     No matching script row found for CH {channelNumber} Cue{" "}
                     {cueValue.trim()}.
                   </p>
-                )
+                ) : null
               ) : null}
 
               {createdIssue ? (
