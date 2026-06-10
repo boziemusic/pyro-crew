@@ -487,7 +487,10 @@ export default function DirectorConsolePage() {
     technicianAssignmentTimes,
   ]);
 
-  const latestIssue = issues[0] ?? null;
+  const latestIssue = sessionForActiveShow
+    ? issues.find((issue) => issue.session_id === sessionForActiveShow.id) ??
+      null
+    : issues.find((issue) => issue.session_id === null) ?? null;
 
   const technicianOverview = useMemo(
     () =>

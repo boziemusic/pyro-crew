@@ -56,6 +56,7 @@ type StatusAction = {
 
 type IssueHistoryNote = {
   issue_id: string;
+  new_status: string;
   note: string | null;
   created_at: string | null;
 };
@@ -138,6 +139,9 @@ export default function TechnicianConsolePage() {
   const [latestIssueNotes, setLatestIssueNotes] = useState<
     Record<string, string>
   >({});
+  const [latestNotFixedNotes, setLatestNotFixedNotes] = useState<
+    Record<string, string>
+  >({});
   const [latestStatusUpdateTimes, setLatestStatusUpdateTimes] = useState<
     Record<string, string>
   >({});
@@ -172,6 +176,7 @@ export default function TechnicianConsolePage() {
 
       if (issueIds.length === 0) {
         setLatestIssueNotes({});
+        setLatestNotFixedNotes({});
         setLatestStatusUpdateTimes({});
         setHistoryReadWarning(null);
         return;
@@ -179,21 +184,36 @@ export default function TechnicianConsolePage() {
 
       const { data, error } = await supabase
         .from("issue_status_history")
-        .select("issue_id, note, created_at")
+        .select("issue_id, new_status, note, created_at")
         .in("issue_id", issueIds)
         .order("created_at", { ascending: false });
 
       if (error) {
         setLatestIssueNotes({});
+        setLatestNotFixedNotes({});
         setLatestStatusUpdateTimes({});
         setHistoryReadWarning(getHistoryReadFailureMessage(error.message));
         return;
       }
 
       const notes: Record<string, string> = {};
+      const notFixedNotes: Record<string, string> = {};
       const statusUpdateTimes: Record<string, string> = {};
+      const latestEventsSeen = new Set<string>();
 
       for (const history of (data ?? []) as IssueHistoryNote[]) {
+        if (!latestEventsSeen.has(history.issue_id)) {
+          latestEventsSeen.add(history.issue_id);
+
+          if (
+            history.note?.trim() &&
+            (history.new_status === "verification_failed" ||
+              history.note.startsWith("Not Fixed"))
+          ) {
+            notFixedNotes[history.issue_id] = "Not Fixed";
+          }
+        }
+
         if (
           history.note?.trim() &&
           !notes[history.issue_id]
@@ -210,6 +230,7 @@ export default function TechnicianConsolePage() {
       }
 
       setLatestIssueNotes(notes);
+      setLatestNotFixedNotes(notFixedNotes);
       setLatestStatusUpdateTimes(statusUpdateTimes);
       setHistoryReadWarning(null);
     },
@@ -252,6 +273,14 @@ export default function TechnicianConsolePage() {
 
     void loadIssues();
   }, [fetchIssues, refreshLatestNotes]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      void refreshIssues();
+    }, 5000);
+
+    return () => window.clearInterval(intervalId);
+  }, [refreshIssues]);
 
   useEffect(() => {
     const handleHandoffChange = () => {
@@ -520,6 +549,7 @@ export default function TechnicianConsolePage() {
 
   const renderIssueCard = (issue: TechnicianIssue) => {
     const isUpdating = updatingIssueId === issue.id;
+    const notFixedNote = latestNotFixedNotes[issue.id];
 
     return (
       <article
@@ -543,7 +573,16 @@ export default function TechnicianConsolePage() {
                 Effect: {issue.effect_name}
               </p>
             ) : null}
-            {latestIssueNotes[issue.id] ? (
+            {notFixedNote ? (
+              <div className="rounded-md border border-[#ef4444]/45 bg-[#2a0b13] px-3 py-2">
+                <p className="text-sm font-bold text-[#fecaca]">
+                  Director marked Not Fixed
+                </p>
+                <p className="mt-1 text-sm italic leading-6 text-[#f8d0d0]">
+                  {notFixedNote}
+                </p>
+              </div>
+            ) : latestIssueNotes[issue.id] ? (
               <p className="text-sm italic leading-6 text-[#cbd5e1]">
                 Note: {latestIssueNotes[issue.id]}
               </p>

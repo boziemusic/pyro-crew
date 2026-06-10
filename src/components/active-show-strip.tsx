@@ -1,7 +1,10 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { useActiveContinuitySession } from "./active-continuity-session";
+import {
+  setActiveContinuitySession,
+  useActiveContinuitySession,
+} from "./active-continuity-session";
 import { ISSUE_IDENTIFIER_VALUE_CLASS_NAME } from "./issue-identifiers";
 
 export type ActiveShow = {
@@ -88,6 +91,13 @@ export function ActiveShowStrip() {
   const secondaryTextClassName = activeShow
     ? ACTIVE_SHOW_SUCCESS_SECONDARY_TEXT
     : ACTIVE_SHOW_NEUTRAL_SECONDARY_TEXT;
+  const clearActiveShow = () => {
+    setActiveContinuitySession(null);
+    window.localStorage.removeItem(ACTIVE_SHOW_STORAGE_KEY);
+    cachedStorageValue = null;
+    cachedActiveShow = null;
+    window.dispatchEvent(new Event(ACTIVE_SHOW_EVENT));
+  };
 
   return (
     <div className={`border-t ${surfaceClassName}`}>
@@ -106,9 +116,20 @@ export function ActiveShowStrip() {
             </>
           ) : null}
         </p>
-        <p className={`text-xs italic ${secondaryTextClassName}`}>
-          Script: {activeShow?.script_filename ?? "No script loaded"}
-        </p>
+        <div className="flex items-center gap-3">
+          <p className={`text-xs italic ${secondaryTextClassName}`}>
+            Script: {activeShow?.script_filename ?? "No script loaded"}
+          </p>
+          {activeShow ? (
+            <button
+              className="text-xs font-semibold text-[#94a3b8] underline decoration-white/20 underline-offset-4 transition hover:text-white"
+              onClick={clearActiveShow}
+              type="button"
+            >
+              Clear Active Show
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   );

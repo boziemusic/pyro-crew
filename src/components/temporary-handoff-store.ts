@@ -130,3 +130,9 @@ export function acceptTemporaryHandoff(handoffId: string) {
     ),
   );
 }
+
+export function removeTemporaryHandoffsForShow(showId: string) {
+  writeHandoffs(
+    readHandoffsSnapshot().filter((handoff) => handoff.showId !== showId),
+  );
+}

@@ -35,7 +35,12 @@ type AttentionIssue = {
   latest_note: string | null;
 };
 
-type FollowUpAction = "not_fixed" | "retrieving_parts" | "unfixable";
+type FollowUpAction =
+  | "not_fixed"
+  | "not_fixed_retrieving_parts"
+  | "not_fixed_unfixable"
+  | "retrieving_parts"
+  | "unfixable";
 
 type AttentionHistory = {
   issue_id: string;
@@ -184,6 +189,7 @@ export function DirectorAttentionQueue({
     newStatus: string,
     transitionNote: string | null = null,
     closeAsUnfixable = false,
+    notFixedNote: string | null = null,
   ) => {
     setUpdatingIssueId(issue.id);
     setFeedback(null);
@@ -209,15 +215,44 @@ export function DirectorAttentionQueue({
       return false;
     }
 
+    const notFixedHistoryNote = notFixedNote ? "Not Fixed" : null;
+    const historyRows: {
+      changed_by_user_id: null;
+      issue_id: string;
+      new_status: string;
+      note: string | null;
+      old_status: string;
+    }[] = notFixedHistoryNote
+      ? [
+          {
+            changed_by_user_id: null,
+            issue_id: issue.id,
+            new_status: "verification_failed",
+            note: notFixedHistoryNote,
+            old_status: issue.status,
+          },
+          {
+            changed_by_user_id: null,
+            issue_id: issue.id,
+            new_status: newStatus,
+            note: transitionNote
+              ? `${notFixedHistoryNote}. ${transitionNote}`
+              : notFixedHistoryNote,
+            old_status: "verification_failed",
+          },
+        ]
+      : [
+          {
+            changed_by_user_id: null,
+            issue_id: issue.id,
+            new_status: newStatus,
+            note: transitionNote,
+            old_status: issue.status,
+          },
+        ];
     const { error: historyError } = await supabase
       .from("issue_status_history")
-      .insert({
-        changed_by_user_id: null,
-        issue_id: issue.id,
-        new_status: newStatus,
-        note: transitionNote,
-        old_status: issue.status,
-      });
+      .insert(historyRows);
 
     if (historyError) {
       setFeedback(`Issue moved to ${formatIssueLabel(newStatus)}.`);
@@ -246,10 +281,13 @@ export function DirectorAttentionQueue({
     // Original: "[TECH NAME] was assigned to help, they'll be there as soon as they can."
     // Additional: "[DIRECTOR NAME] needs you to help [ORIGINAL TECH NAME]."
     const technicianLabel = getTemporaryTechnicianLabel(technicianId);
+    const additionalTechnicianNote = `Additional technician ${technicianLabel} assigned to help ${getTemporaryTechnicianLabel(assignments[issue.id])}.`;
     const wasUpdated = await transitionIssue(
       issue,
       "in_progress",
-      `Additional technician ${technicianLabel} assigned to help ${getTemporaryTechnicianLabel(assignments[issue.id])}.`,
+      issue.latest_note?.startsWith("Not Fixed")
+        ? `${issue.latest_note} ${additionalTechnicianNote}`
+        : additionalTechnicianNote,
     );
 
     if (wasUpdated) {
@@ -380,6 +418,7 @@ export function DirectorAttentionQueue({
                       issue.status === "director_assistance_requested"
                     }
                     issue={issue}
+                    notFixed={action === "not_fixed"}
                     onOpenAction={openAction}
                     onTransition={transitionIssue}
                   />
@@ -395,10 +434,14 @@ export function DirectorAttentionQueue({
                   />
                 ) : null}
 
-                {action === "retrieving_parts" || action === "unfixable" ? (
+                {action === "retrieving_parts" ||
+                action === "not_fixed_retrieving_parts" ||
+                action === "unfixable" ||
+                action === "not_fixed_unfixable" ? (
                   <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-3">
                     <label className="grid gap-2 text-xs font-semibold text-white">
-                      {action === "unfixable"
+                      {action === "unfixable" ||
+                      action === "not_fixed_unfixable"
                         ? "Why is this issue unfixable?"
                         : "Parts retrieval note"}
                       <textarea
@@ -408,7 +451,8 @@ export function DirectorAttentionQueue({
                         value={note}
                       />
                     </label>
-                    {action === "unfixable" ? (
+                    {action === "unfixable" ||
+                    action === "not_fixed_unfixable" ? (
                       <p className="mt-2 text-xs text-[#fecaca]">
                         Confirming marks this issue unfixable and closes it.
                       </p>
@@ -420,16 +464,23 @@ export function DirectorAttentionQueue({
                         onClick={() =>
                           void transitionIssue(
                             issue,
-                            action === "unfixable"
+                            action === "unfixable" ||
+                              action === "not_fixed_unfixable"
                               ? "unfixable"
                               : "retrieving_parts",
                             note.trim(),
-                            action === "unfixable",
+                            action === "unfixable" ||
+                              action === "not_fixed_unfixable",
+                            action === "not_fixed_unfixable" ||
+                              action === "not_fixed_retrieving_parts"
+                              ? "Not Fixed"
+                              : null,
                           )
                         }
                         type="button"
                       >
-                        {action === "unfixable"
+                        {action === "unfixable" ||
+                        action === "not_fixed_unfixable"
                           ? "CONFIRM UNFIXABLE"
                           : "SAVE & CONTINUE"}
                       </button>
@@ -459,18 +510,21 @@ function ActionChoices({
   disabled,
   includeConfirmFixed,
   issue,
+  notFixed,
   onOpenAction,
   onTransition,
 }: {
   disabled: boolean;
   includeConfirmFixed: boolean;
   issue: AttentionIssue;
+  notFixed: boolean;
   onOpenAction: (issueId: string, action: FollowUpAction) => void;
   onTransition: (
     issue: AttentionIssue,
     status: string,
     note?: string | null,
     closeAsUnfixable?: boolean,
+    notFixedNote?: string | null,
   ) => Promise<boolean>;
 }) {
   return (
@@ -478,14 +532,28 @@ function ActionChoices({
       <button
         className="rounded-md border border-[#3b82f6]/40 bg-[#0b1b35] px-2 py-2 text-xs font-semibold text-[#bfdbfe]"
         disabled={disabled}
-        onClick={() => void onTransition(issue, "in_progress")}
+        onClick={() =>
+          void onTransition(
+            issue,
+            "in_progress",
+            null,
+            false,
+            notFixed ? "Not Fixed" : null,
+          )
+        }
         type="button"
       >
         Still Working
       </button>
       <button
         className="rounded-md border border-[#f59e0b]/40 bg-[#2a1c06] px-2 py-2 text-xs font-semibold text-[#fde68a]"
-        onClick={() => onOpenAction(issue.id, "retrieving_parts")}
+        disabled={disabled}
+        onClick={() =>
+          onOpenAction(
+            issue.id,
+            notFixed ? "not_fixed_retrieving_parts" : "retrieving_parts",
+          )
+        }
         type="button"
       >
         Retrieving Parts
@@ -494,7 +562,13 @@ function ActionChoices({
         className="rounded-md border border-[#8b5cf6]/40 bg-[#1b1235] px-2 py-2 text-xs font-semibold text-[#d8c8ff]"
         disabled={disabled}
         onClick={() =>
-          void onTransition(issue, "additional_technician_requested")
+          void onTransition(
+            issue,
+            "additional_technician_requested",
+            null,
+            false,
+            notFixed ? "Not Fixed" : null,
+          )
         }
         type="button"
       >
@@ -512,7 +586,13 @@ function ActionChoices({
       ) : null}
       <button
         className="rounded-md border border-[#ef4444]/40 bg-[#2a0b13] px-2 py-2 text-xs font-semibold text-[#fecaca]"
-        onClick={() => onOpenAction(issue.id, "unfixable")}
+        disabled={disabled}
+        onClick={() =>
+          onOpenAction(
+            issue.id,
+            notFixed ? "not_fixed_unfixable" : "unfixable",
+          )
+        }
         type="button"
       >
         Mark Unfixable

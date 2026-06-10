@@ -351,6 +351,66 @@ export function setTemporaryAdditionalTechnicianAssignment(
   window.dispatchEvent(new Event(ADDITIONAL_STORE_EVENT));
 }
 
+export function removeTemporaryTechnicianData(issueIds: string[]) {
+  const issueIdSet = new Set(issueIds);
+  const assignments = Object.fromEntries(
+    Object.entries(readAssignmentsSnapshot()).filter(
+      ([issueId]) => !issueIdSet.has(issueId),
+    ),
+  ) as TemporaryTechnicianAssignments;
+  const assignmentTimes = Object.fromEntries(
+    Object.entries(
+      readAssignmentTimesSnapshot(ASSIGNMENT_TIME_STORAGE_KEY),
+    ).filter(([issueId]) => !issueIdSet.has(issueId)),
+  ) as TemporaryAssignmentTimes;
+  const additionalAssignments = Object.fromEntries(
+    Object.entries(readAdditionalAssignmentsSnapshot()).filter(
+      ([issueId]) => !issueIdSet.has(issueId),
+    ),
+  ) as TemporaryTechnicianAssignments;
+  const additionalAssignmentTimes = Object.fromEntries(
+    Object.entries(
+      readAssignmentTimesSnapshot(
+        ADDITIONAL_ASSIGNMENT_TIME_STORAGE_KEY,
+        true,
+      ),
+    ).filter(([issueId]) => !issueIdSet.has(issueId)),
+  ) as TemporaryAssignmentTimes;
+  const serializedAssignments = JSON.stringify(assignments);
+  const serializedAssignmentTimes = JSON.stringify(assignmentTimes);
+  const serializedAdditionalAssignments = JSON.stringify(
+    additionalAssignments,
+  );
+  const serializedAdditionalAssignmentTimes = JSON.stringify(
+    additionalAssignmentTimes,
+  );
+
+  window.localStorage.setItem(STORAGE_KEY, serializedAssignments);
+  window.localStorage.setItem(
+    ASSIGNMENT_TIME_STORAGE_KEY,
+    serializedAssignmentTimes,
+  );
+  window.localStorage.setItem(
+    ADDITIONAL_STORAGE_KEY,
+    serializedAdditionalAssignments,
+  );
+  window.localStorage.setItem(
+    ADDITIONAL_ASSIGNMENT_TIME_STORAGE_KEY,
+    serializedAdditionalAssignmentTimes,
+  );
+  cachedStorageValue = serializedAssignments;
+  cachedAssignments = assignments;
+  cachedAssignmentTimeStorageValue = serializedAssignmentTimes;
+  cachedAssignmentTimes = assignmentTimes;
+  cachedAdditionalStorageValue = serializedAdditionalAssignments;
+  cachedAdditionalAssignments = additionalAssignments;
+  cachedAdditionalAssignmentTimeStorageValue =
+    serializedAdditionalAssignmentTimes;
+  cachedAdditionalAssignmentTimes = additionalAssignmentTimes;
+  window.dispatchEvent(new Event(STORE_EVENT));
+  window.dispatchEvent(new Event(ADDITIONAL_STORE_EVENT));
+}
+
 export function getTemporaryTechnicianLabel(
   technicianId: TemporaryTechnicianId | undefined,
 ) {

@@ -94,6 +94,17 @@ export function saveParsedScript(
   window.dispatchEvent(new Event(STORE_EVENT));
 }
 
+export function removeParsedScript(showId: string) {
+  const nextStore = { ...readStoreSnapshot() };
+  delete nextStore[showId];
+  const serialized = JSON.stringify(nextStore);
+
+  window.localStorage.setItem(STORAGE_KEY, serialized);
+  cachedStorageValue = serialized;
+  cachedStore = nextStore;
+  window.dispatchEvent(new Event(STORE_EVENT));
+}
+
 export function findParsedScriptRow(
   rows: ParsedScriptRow[],
   channelNumber: number,

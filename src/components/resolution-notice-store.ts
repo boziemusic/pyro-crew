@@ -96,3 +96,23 @@ export function acknowledgeResolutionNotice(
   cachedAcknowledgements = nextAcknowledgements;
   window.dispatchEvent(new Event(STORE_EVENT));
 }
+
+export function removeResolutionNoticeAcknowledgements(
+  issueIds: string[],
+) {
+  const issueIdSet = new Set(issueIds);
+  const nextAcknowledgements = Object.fromEntries(
+    Object.entries(readAcknowledgementsSnapshot()).map(
+      ([technicianId, acknowledgements]) => [
+        technicianId,
+        acknowledgements.filter((issueId) => !issueIdSet.has(issueId)),
+      ],
+    ),
+  ) as ResolutionAcknowledgements;
+  const serialized = JSON.stringify(nextAcknowledgements);
+
+  window.localStorage.setItem(STORAGE_KEY, serialized);
+  cachedStorageValue = serialized;
+  cachedAcknowledgements = nextAcknowledgements;
+  window.dispatchEvent(new Event(STORE_EVENT));
+}

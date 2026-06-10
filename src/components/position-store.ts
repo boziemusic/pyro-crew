@@ -210,6 +210,17 @@ export function deleteFieldPosition(showId: string, positionId: string) {
   });
 }
 
+export function deleteShowPositionData(showId: string) {
+  const nextStore = { ...readStoreSnapshot() };
+  delete nextStore[showId];
+  const serialized = JSON.stringify(nextStore);
+
+  window.localStorage.setItem(STORAGE_KEY, serialized);
+  cachedStorageValue = serialized;
+  cachedStore = nextStore;
+  window.dispatchEvent(new Event(STORE_EVENT));
+}
+
 // TODO(script import): populate groups and positions from imported show scripts.
 // TODO(map placement): place groups and positions visually on a Google Maps field map.
 // TODO(field zones): support team and technician assignment by field zone.

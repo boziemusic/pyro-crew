@@ -17,3 +17,11 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+input[type="date"] {
+  color-scheme: dark;
+}
+
+.native-date-input::-webkit-calendar-picker-indicator {
+  opacity: 0;
+}
