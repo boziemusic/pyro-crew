@@ -35,6 +35,7 @@ import {
   getHistoryWriteFailureMessage,
 } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
+import { TechnicianMapAssist } from "@/components/technician-map-assist";
 
 type TechnicianIssue = {
   id: string;
@@ -155,6 +156,8 @@ export default function TechnicianConsolePage() {
   const [handoffNotes, setHandoffNotes] = useState<Record<string, string>>(
     {},
   );
+  const [mapAssistIssue, setMapAssistIssue] =
+    useState<TechnicianIssue | null>(null);
 
   const fetchIssues = useCallback(async () => {
     if (!activeShow) {
@@ -568,6 +571,15 @@ export default function TechnicianConsolePage() {
             <p className="text-sm text-[#94a3b8]">
               Position: {issue.position_name ?? "None"}
             </p>
+            {issue.position_name ? (
+              <button
+                className="w-fit text-sm font-semibold text-[#fbbf24] transition hover:text-[#fde68a]"
+                onClick={() => setMapAssistIssue(issue)}
+                type="button"
+              >
+                Show on Map
+              </button>
+            ) : null}
             {issue.effect_name ? (
               <p className="text-sm text-[#94a3b8]">
                 Effect: {issue.effect_name}
@@ -707,6 +719,13 @@ export default function TechnicianConsolePage() {
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-5 py-6 sm:px-8 lg:py-8">
+      {activeShow && mapAssistIssue?.position_name ? (
+        <TechnicianMapAssist
+          onClose={() => setMapAssistIssue(null)}
+          positionName={mapAssistIssue.position_name}
+          showId={activeShow.id}
+        />
+      ) : null}
       <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25">
         <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#a78bfa]">
           Technician Console
