@@ -13,6 +13,14 @@ export type FieldPosition = {
   groupId: string | null;
   name: string;
   createdAt: string;
+  source?: "manual" | "script";
+};
+
+export type PositionImportSummary = {
+  positionsFound: number;
+  positionsImported: number;
+  duplicatesSkipped: number;
+  stalePositionsRemoved: number;
 };
 
 type ShowPositionData = {
@@ -159,12 +167,66 @@ export function createFieldPosition(
     groupId,
     name: name.trim(),
     createdAt: new Date().toISOString(),
+    source: "manual",
   };
 
   writeShowData(showId, {
     ...current,
     positions: [...current.positions, position],
   });
+}
+
+export function syncScriptPositions(
+  showId: string,
+  positionNames: string[],
+): PositionImportSummary {
+  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
+  const uniquePositions = new Map<string, string>();
+
+  positionNames.forEach((name) => {
+    const trimmedName = name.trim();
+
+    if (trimmedName) {
+      uniquePositions.set(trimmedName.toLocaleLowerCase(), trimmedName);
+    }
+  });
+
+  const existingNames = new Set(
+    current.positions.map((position) =>
+      position.name.trim().toLocaleLowerCase(),
+    ),
+  );
+  const importedAt = new Date().toISOString();
+  const newPositions = Array.from(uniquePositions.entries())
+    .filter(([normalizedName]) => !existingNames.has(normalizedName))
+    .map<FieldPosition>(([, name]) => ({
+      id: createId(),
+      groupId: null,
+      name,
+      createdAt: importedAt,
+      source: "script",
+    }));
+  const retainedPositions = current.positions.filter(
+    (position) =>
+      position.source !== "script" ||
+      uniquePositions.has(position.name.trim().toLocaleLowerCase()),
+  );
+  const stalePositionsRemoved =
+    current.positions.length - retainedPositions.length;
+
+  if (newPositions.length > 0 || stalePositionsRemoved > 0) {
+    writeShowData(showId, {
+      ...current,
+      positions: [...retainedPositions, ...newPositions],
+    });
+  }
+
+  return {
+    positionsFound: uniquePositions.size,
+    positionsImported: newPositions.length,
+    duplicatesSkipped: uniquePositions.size - newPositions.length,
+    stalePositionsRemoved,
+  };
 }
 
 export function moveFieldPosition(
@@ -178,6 +240,26 @@ export function moveFieldPosition(
     ...current,
     positions: current.positions.map((position) =>
       position.id === positionId ? { ...position, groupId } : position,
+    ),
+  });
+}
+
+export function moveFieldPositions(
+  showId: string,
+  positionIds: string[],
+  groupId: string | null,
+) {
+  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
+  const selectedIds = new Set(positionIds);
+
+  if (selectedIds.size === 0) {
+    return;
+  }
+
+  writeShowData(showId, {
+    ...current,
+    positions: current.positions.map((position) =>
+      selectedIds.has(position.id) ? { ...position, groupId } : position,
     ),
   });
 }
@@ -221,6 +303,4 @@ export function deleteShowPositionData(showId: string) {
   window.dispatchEvent(new Event(STORE_EVENT));
 }
 
-// TODO(script import): populate groups and positions from imported show scripts.
-// TODO(map placement): place groups and positions visually on a Google Maps field map.
 // TODO(field zones): support team and technician assignment by field zone.

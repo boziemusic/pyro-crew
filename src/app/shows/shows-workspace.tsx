@@ -26,6 +26,7 @@ import {
   useActiveContinuitySession,
 } from "@/components/active-continuity-session";
 import { deleteShowPositionData } from "@/components/position-store";
+import { deleteShowFieldMapData } from "@/components/field-map-store";
 import { removeResolutionNoticeAcknowledgements } from "@/components/resolution-notice-store";
 import { removeTemporaryHandoffsForShow } from "@/components/temporary-handoff-store";
 import { removeTemporaryTechnicianData } from "@/components/temporary-technician-store";
@@ -777,6 +778,7 @@ export function ShowsWorkspace() {
     }
 
     deleteShowPositionData(show.id);
+    deleteShowFieldMapData(show.id);
     removeTemporaryTechnicianData(issueIds);
     removeTemporaryHandoffsForShow(show.id);
     removeResolutionNoticeAcknowledgements(issueIds);

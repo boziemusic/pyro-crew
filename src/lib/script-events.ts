@@ -71,6 +71,18 @@ export async function fetchScriptEventPreview(
     .limit(5);
 }
 
+export async function fetchScriptPositionNames(
+  supabase: SupabaseClient,
+  showId: string,
+) {
+  return supabase
+    .from("script_events")
+    .select("position_name")
+    .eq("show_id", showId)
+    .not("position_name", "is", null)
+    .order("position_name", { ascending: true });
+}
+
 export async function restoreScriptEvents(
   supabase: SupabaseClient,
   showId: string,
