@@ -1,9 +1,13 @@
-import { createClient } from "@supabase/supabase-js";
+import {
+  createClient,
+  type SupabaseClient,
+} from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+let browserClient: SupabaseClient | null = null;
 
 function requireSupabaseEnv() {
   const missing = [
@@ -30,5 +34,9 @@ function requireSupabaseEnv() {
 export function createSupabaseBrowserClient() {
   const { anonKey, url } = requireSupabaseEnv();
 
-  return createClient(url, anonKey);
+  if (!browserClient) {
+    browserClient = createClient(url, anonKey);
+  }
+
+  return browserClient;
 }

@@ -5,10 +5,15 @@ import { useFieldMap } from "@/components/field-map-store";
 import { useShowPositions } from "@/components/position-store";
 
 export function TechnicianMapAssist({
+  onDataState,
   onClose,
   positionName,
   showId,
 }: {
+  onDataState?: (
+    status: "loading" | "loaded" | "error",
+    error: string | null,
+  ) => void;
   onClose: () => void;
   positionName: string;
   showId: string;
@@ -68,6 +73,20 @@ export function TechnicianMapAssist({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
+
+  useEffect(() => {
+    if (!onDataState) {
+      return;
+    }
+
+    if (fieldMap.error) {
+      onDataState("error", fieldMap.error);
+    } else if (fieldMap.isLoading) {
+      onDataState("loading", null);
+    } else {
+      onDataState("loaded", null);
+    }
+  }, [fieldMap.error, fieldMap.isLoading, onDataState]);
 
   return (
     <div

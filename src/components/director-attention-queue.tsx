@@ -8,6 +8,11 @@ import {
   useState,
 } from "react";
 import { useActiveShow } from "@/components/active-show-strip";
+import { useActiveContinuitySession } from "@/components/active-continuity-session";
+import {
+  setActiveIssueAssignmentAcknowledgedAt,
+  useActiveIssueAssignments,
+} from "@/components/issue-assignment-store";
 import {
   formatIssueLabel,
   IssueIdentifiers,
@@ -18,7 +23,6 @@ import {
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
   useTemporaryAdditionalTechnicianAssignments,
-  useTemporaryTechnicianAssignments,
 } from "@/components/temporary-technician-store";
 import { getHistoryWriteFailureMessage } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
@@ -87,8 +91,14 @@ export function DirectorAttentionQueue({
   onIssueUpdated?: () => Promise<void>;
 }) {
   const activeShow = useActiveShow();
+  const activeSession = useActiveContinuitySession();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
-  const assignments = useTemporaryTechnicianAssignments();
+  const { assignmentsByIssue: assignments } = useActiveIssueAssignments(
+    activeShow?.id,
+    activeSession && activeSession.show_id === activeShow?.id
+      ? activeSession.id
+      : null,
+  );
   const additionalAssignments =
     useTemporaryAdditionalTechnicianAssignments();
   const [issues, setIssues] = useState<AttentionIssue[]>([]);
@@ -242,6 +252,19 @@ export function DirectorAttentionQueue({
     setUpdatingIssueId(issue.id);
     setFeedback(null);
     setHistoryWarning(null);
+
+    if (newStatus === "retrieving_parts") {
+      const { error: assignmentError } =
+        await setActiveIssueAssignmentAcknowledgedAt(issue.id, null);
+
+      if (assignmentError) {
+        setFeedback(
+          `Could not return issue to technician: ${assignmentError.message}`,
+        );
+        setUpdatingIssueId(null);
+        return false;
+      }
+    }
 
     const updates: { status: string; closed_at?: string } = {
       status: newStatus,

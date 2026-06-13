@@ -18,10 +18,6 @@ type TemporaryTechnicianAssignments = Record<
 >;
 type TemporaryAssignmentTimes = Record<string, string>;
 
-const STORAGE_KEY = "pyro-crew-temporary-technician-assignments";
-const STORE_EVENT = "pyro-crew-temporary-technician-assignments-change";
-const ASSIGNMENT_TIME_STORAGE_KEY =
-  "pyro-crew-temporary-technician-assignment-times";
 const ADDITIONAL_STORAGE_KEY =
   "pyro-crew-temporary-additional-technician-assignments";
 const ADDITIONAL_STORE_EVENT =
@@ -36,10 +32,6 @@ const EMPTY_ASSIGNMENTS: TemporaryTechnicianAssignments = {};
 const EMPTY_ASSIGNMENT_TIMES: TemporaryAssignmentTimes = {};
 const DEFAULT_SELECTED_TECHNICIAN: TemporaryTechnicianId = "tech_1";
 
-let cachedStorageValue: string | null = null;
-let cachedAssignments = EMPTY_ASSIGNMENTS;
-let cachedAssignmentTimeStorageValue: string | null = null;
-let cachedAssignmentTimes = EMPTY_ASSIGNMENT_TIMES;
 let cachedAdditionalStorageValue: string | null = null;
 let cachedAdditionalAssignments = EMPTY_ASSIGNMENTS;
 let cachedAdditionalAssignmentTimeStorageValue: string | null = null;
@@ -53,50 +45,6 @@ function isTemporaryTechnicianId(
   return TEMPORARY_TECHNICIANS.some(
     (technician) => technician.id === value,
   );
-}
-
-function readAssignmentsSnapshot() {
-  if (typeof window === "undefined") {
-    return EMPTY_ASSIGNMENTS;
-  }
-
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-
-  if (!stored) {
-    cachedStorageValue = null;
-    cachedAssignments = EMPTY_ASSIGNMENTS;
-    return cachedAssignments;
-  }
-
-  if (stored === cachedStorageValue) {
-    return cachedAssignments;
-  }
-
-  try {
-    const parsed = JSON.parse(stored) as Record<string, unknown>;
-    cachedAssignments = Object.fromEntries(
-      Object.entries(parsed).filter(([, value]) =>
-        isTemporaryTechnicianId(value),
-      ),
-    ) as TemporaryTechnicianAssignments;
-    cachedStorageValue = stored;
-    return cachedAssignments;
-  } catch {
-    window.localStorage.removeItem(STORAGE_KEY);
-    cachedStorageValue = null;
-    cachedAssignments = EMPTY_ASSIGNMENTS;
-    return cachedAssignments;
-  }
-}
-
-function subscribeToAssignments(onStoreChange: () => void) {
-  window.addEventListener("storage", onStoreChange);
-  window.addEventListener(STORE_EVENT, onStoreChange);
-
-  return () => {
-    window.removeEventListener("storage", onStoreChange);
-    window.removeEventListener(STORE_EVENT, onStoreChange);
-  };
 }
 
 function readAdditionalAssignmentsSnapshot() {
@@ -172,35 +120,23 @@ function subscribeToSelectedTechnician(onStoreChange: () => void) {
   };
 }
 
-function readAssignmentTimesSnapshot(
-  storageKey: string,
-  additional = false,
-) {
+function readAdditionalAssignmentTimesSnapshot() {
   if (typeof window === "undefined") {
     return EMPTY_ASSIGNMENT_TIMES;
   }
 
-  const stored = window.localStorage.getItem(storageKey);
-  const cachedValue = additional
-    ? cachedAdditionalAssignmentTimeStorageValue
-    : cachedAssignmentTimeStorageValue;
+  const stored = window.localStorage.getItem(
+    ADDITIONAL_ASSIGNMENT_TIME_STORAGE_KEY,
+  );
 
   if (!stored) {
-    if (additional) {
-      cachedAdditionalAssignmentTimeStorageValue = null;
-      cachedAdditionalAssignmentTimes = EMPTY_ASSIGNMENT_TIMES;
-      return cachedAdditionalAssignmentTimes;
-    }
-
-    cachedAssignmentTimeStorageValue = null;
-    cachedAssignmentTimes = EMPTY_ASSIGNMENT_TIMES;
-    return cachedAssignmentTimes;
+    cachedAdditionalAssignmentTimeStorageValue = null;
+    cachedAdditionalAssignmentTimes = EMPTY_ASSIGNMENT_TIMES;
+    return cachedAdditionalAssignmentTimes;
   }
 
-  if (stored === cachedValue) {
-    return additional
-      ? cachedAdditionalAssignmentTimes
-      : cachedAssignmentTimes;
+  if (stored === cachedAdditionalAssignmentTimeStorageValue) {
+    return cachedAdditionalAssignmentTimes;
   }
 
   try {
@@ -211,44 +147,17 @@ function readAssignmentTimesSnapshot(
       ),
     ) as TemporaryAssignmentTimes;
 
-    if (additional) {
-      cachedAdditionalAssignmentTimeStorageValue = stored;
-      cachedAdditionalAssignmentTimes = times;
-    } else {
-      cachedAssignmentTimeStorageValue = stored;
-      cachedAssignmentTimes = times;
-    }
-
+    cachedAdditionalAssignmentTimeStorageValue = stored;
+    cachedAdditionalAssignmentTimes = times;
     return times;
   } catch {
-    window.localStorage.removeItem(storageKey);
-
-    if (additional) {
-      cachedAdditionalAssignmentTimeStorageValue = null;
-      cachedAdditionalAssignmentTimes = EMPTY_ASSIGNMENT_TIMES;
-      return cachedAdditionalAssignmentTimes;
-    }
-
-    cachedAssignmentTimeStorageValue = null;
-    cachedAssignmentTimes = EMPTY_ASSIGNMENT_TIMES;
-    return cachedAssignmentTimes;
+    window.localStorage.removeItem(
+      ADDITIONAL_ASSIGNMENT_TIME_STORAGE_KEY,
+    );
+    cachedAdditionalAssignmentTimeStorageValue = null;
+    cachedAdditionalAssignmentTimes = EMPTY_ASSIGNMENT_TIMES;
+    return cachedAdditionalAssignmentTimes;
   }
-}
-
-export function useTemporaryTechnicianAssignments() {
-  return useSyncExternalStore(
-    subscribeToAssignments,
-    readAssignmentsSnapshot,
-    () => EMPTY_ASSIGNMENTS,
-  );
-}
-
-export function useTemporaryTechnicianAssignmentTimes() {
-  return useSyncExternalStore(
-    subscribeToAssignments,
-    () => readAssignmentTimesSnapshot(ASSIGNMENT_TIME_STORAGE_KEY),
-    () => EMPTY_ASSIGNMENT_TIMES,
-  );
 }
 
 export function useTemporaryAdditionalTechnicianAssignments() {
@@ -262,11 +171,7 @@ export function useTemporaryAdditionalTechnicianAssignments() {
 export function useTemporaryAdditionalTechnicianAssignmentTimes() {
   return useSyncExternalStore(
     subscribeToAdditionalAssignments,
-    () =>
-      readAssignmentTimesSnapshot(
-        ADDITIONAL_ASSIGNMENT_TIME_STORAGE_KEY,
-        true,
-      ),
+    readAdditionalAssignmentTimesSnapshot,
     () => EMPTY_ASSIGNMENT_TIMES,
   );
 }
@@ -290,37 +195,6 @@ export function setSelectedTemporaryTechnician(
   window.dispatchEvent(new Event(SELECTED_TECHNICIAN_STORE_EVENT));
 }
 
-export function setTemporaryTechnicianAssignment(
-  issueId: string,
-  technicianId: TemporaryTechnicianId | null,
-) {
-  const assignments = { ...readAssignmentsSnapshot() };
-  const assignmentTimes = {
-    ...readAssignmentTimesSnapshot(ASSIGNMENT_TIME_STORAGE_KEY),
-  };
-
-  if (technicianId) {
-    assignments[issueId] = technicianId;
-    assignmentTimes[issueId] = new Date().toISOString();
-  } else {
-    delete assignments[issueId];
-    delete assignmentTimes[issueId];
-  }
-
-  const serialized = JSON.stringify(assignments);
-  const serializedTimes = JSON.stringify(assignmentTimes);
-  window.localStorage.setItem(STORAGE_KEY, serialized);
-  window.localStorage.setItem(
-    ASSIGNMENT_TIME_STORAGE_KEY,
-    serializedTimes,
-  );
-  cachedStorageValue = serialized;
-  cachedAssignments = assignments;
-  cachedAssignmentTimeStorageValue = serializedTimes;
-  cachedAssignmentTimes = assignmentTimes;
-  window.dispatchEvent(new Event(STORE_EVENT));
-}
-
 export function setTemporaryAdditionalTechnicianAssignment(
   issueId: string,
   technicianId: TemporaryTechnicianId,
@@ -330,10 +204,7 @@ export function setTemporaryAdditionalTechnicianAssignment(
     [issueId]: technicianId,
   };
   const assignmentTimes = {
-    ...readAssignmentTimesSnapshot(
-      ADDITIONAL_ASSIGNMENT_TIME_STORAGE_KEY,
-      true,
-    ),
+    ...readAdditionalAssignmentTimesSnapshot(),
     [issueId]: new Date().toISOString(),
   };
   const serialized = JSON.stringify(assignments);
@@ -353,16 +224,6 @@ export function setTemporaryAdditionalTechnicianAssignment(
 
 export function removeTemporaryTechnicianData(issueIds: string[]) {
   const issueIdSet = new Set(issueIds);
-  const assignments = Object.fromEntries(
-    Object.entries(readAssignmentsSnapshot()).filter(
-      ([issueId]) => !issueIdSet.has(issueId),
-    ),
-  ) as TemporaryTechnicianAssignments;
-  const assignmentTimes = Object.fromEntries(
-    Object.entries(
-      readAssignmentTimesSnapshot(ASSIGNMENT_TIME_STORAGE_KEY),
-    ).filter(([issueId]) => !issueIdSet.has(issueId)),
-  ) as TemporaryAssignmentTimes;
   const additionalAssignments = Object.fromEntries(
     Object.entries(readAdditionalAssignmentsSnapshot()).filter(
       ([issueId]) => !issueIdSet.has(issueId),
@@ -370,14 +231,9 @@ export function removeTemporaryTechnicianData(issueIds: string[]) {
   ) as TemporaryTechnicianAssignments;
   const additionalAssignmentTimes = Object.fromEntries(
     Object.entries(
-      readAssignmentTimesSnapshot(
-        ADDITIONAL_ASSIGNMENT_TIME_STORAGE_KEY,
-        true,
-      ),
+      readAdditionalAssignmentTimesSnapshot(),
     ).filter(([issueId]) => !issueIdSet.has(issueId)),
   ) as TemporaryAssignmentTimes;
-  const serializedAssignments = JSON.stringify(assignments);
-  const serializedAssignmentTimes = JSON.stringify(assignmentTimes);
   const serializedAdditionalAssignments = JSON.stringify(
     additionalAssignments,
   );
@@ -385,11 +241,6 @@ export function removeTemporaryTechnicianData(issueIds: string[]) {
     additionalAssignmentTimes,
   );
 
-  window.localStorage.setItem(STORAGE_KEY, serializedAssignments);
-  window.localStorage.setItem(
-    ASSIGNMENT_TIME_STORAGE_KEY,
-    serializedAssignmentTimes,
-  );
   window.localStorage.setItem(
     ADDITIONAL_STORAGE_KEY,
     serializedAdditionalAssignments,
@@ -398,16 +249,11 @@ export function removeTemporaryTechnicianData(issueIds: string[]) {
     ADDITIONAL_ASSIGNMENT_TIME_STORAGE_KEY,
     serializedAdditionalAssignmentTimes,
   );
-  cachedStorageValue = serializedAssignments;
-  cachedAssignments = assignments;
-  cachedAssignmentTimeStorageValue = serializedAssignmentTimes;
-  cachedAssignmentTimes = assignmentTimes;
   cachedAdditionalStorageValue = serializedAdditionalAssignments;
   cachedAdditionalAssignments = additionalAssignments;
   cachedAdditionalAssignmentTimeStorageValue =
     serializedAdditionalAssignmentTimes;
   cachedAdditionalAssignmentTimes = additionalAssignmentTimes;
-  window.dispatchEvent(new Event(STORE_EVENT));
   window.dispatchEvent(new Event(ADDITIONAL_STORE_EVENT));
 }
 

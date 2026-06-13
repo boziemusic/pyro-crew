@@ -27,10 +27,14 @@ export function MissionControlShell({ children }: { children: ReactNode }) {
     (route) => pathname === route || pathname.startsWith(`${route}/`),
   );
   const isBlocked = isProtectedRoute && !activeShow;
+  const isTechnicianRoute =
+    pathname === "/technician" || pathname.startsWith("/technician/");
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,#1f1140_0,#050816_36%,#020617_100%)]">
-      <header className="sticky top-0 z-20 border-b border-white/10 bg-[#070b18]/95 shadow-2xl shadow-black/25 backdrop-blur">
+      <header
+        className={`${isTechnicianRoute ? "hidden md:block" : ""} sticky top-0 z-20 border-b border-white/10 bg-[#070b18]/95 shadow-2xl shadow-black/25 backdrop-blur`}
+      >
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-5 py-4 sm:px-8 xl:flex-row xl:items-center xl:justify-between">
           <Link
             href="/shows"

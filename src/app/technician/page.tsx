@@ -1,8 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useActiveShow } from "@/components/active-show-strip";
+import { useRouter } from "next/navigation";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  setActiveShow,
+  useActiveShow,
+} from "@/components/active-show-strip";
+import {
+  setActiveContinuitySession,
+  useActiveContinuitySession,
+} from "@/components/active-continuity-session";
 import {
   formatIssueLabel,
   getIssueStatusClassName,
@@ -13,12 +27,13 @@ import {
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
   setSelectedTemporaryTechnician,
-  useTemporaryAdditionalTechnicianAssignmentTimes,
-  useTemporaryAdditionalTechnicianAssignments,
   useSelectedTemporaryTechnician,
-  useTemporaryTechnicianAssignmentTimes,
-  useTemporaryTechnicianAssignments,
 } from "@/components/temporary-technician-store";
+import {
+  fetchActiveIssueAssignments,
+  setActiveIssueAssignmentAcknowledgedAt,
+  type IssueAssignment,
+} from "@/components/issue-assignment-store";
 import {
   acknowledgeResolutionNotice,
   useResolutionNoticeAcknowledgements,
@@ -45,6 +60,7 @@ type TechnicianIssue = {
   position_name: string | null;
   effect_name: string | null;
   status: string;
+  session_id: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -59,12 +75,42 @@ type IssueHistoryNote = {
   issue_id: string;
   new_status: string;
   note: string | null;
+  old_status: string | null;
   created_at: string | null;
+};
+
+type TechnicianQueryName =
+  | "issues"
+  | "status history"
+  | "resolution notices"
+  | "assignments"
+  | "map assist data";
+
+type TechnicianQueryDiagnostic = {
+  status: "idle" | "loading" | "loaded" | "error" | "local";
+  error: string | null;
+};
+
+type MobileSection =
+  | "assigned"
+  | "working"
+  | "awaiting-director"
+  | "resolutions";
+
+const initialQueryDiagnostics: Record<
+  TechnicianQueryName,
+  TechnicianQueryDiagnostic
+> = {
+  assignments: { status: "idle", error: null },
+  issues: { status: "idle", error: null },
+  "map assist data": { status: "idle", error: null },
+  "resolution notices": { status: "local", error: null },
+  "status history": { status: "idle", error: null },
 };
 
 const STATUS_ACTIONS: StatusAction[] = [
   {
-    label: "Working",
+    label: "Start Working",
     status: "in_progress",
     className: "border-[#3b82f6]/45 bg-[#0b1b35] text-[#bfdbfe]",
   },
@@ -109,30 +155,41 @@ const resolutionStatuses = new Set([
   "unfixable",
 ]);
 
+const workingStatuses = new Set(["in_progress", "retrieving_parts"]);
+
+const awaitingDirectorStatuses = new Set([
+  "director_assistance_requested",
+  "additional_technician_requested",
+  "awaiting_verification",
+  "unfixable_recommended",
+]);
+
 function getTimestampValue(value: string | null | undefined) {
   const timestamp = value ? Date.parse(value) : Number.NaN;
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 export default function TechnicianConsolePage() {
+  const router = useRouter();
   const activeShow = useActiveShow();
-  const assignments = useTemporaryTechnicianAssignments();
-  const assignmentTimes = useTemporaryTechnicianAssignmentTimes();
-  const additionalAssignments =
-    useTemporaryAdditionalTechnicianAssignments();
-  const additionalAssignmentTimes =
-    useTemporaryAdditionalTechnicianAssignmentTimes();
+  const activeSession = useActiveContinuitySession();
   const resolutionAcknowledgements =
     useResolutionNoticeAcknowledgements();
   const handoffs = useTemporaryHandoffs();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const selectedTechnician = useSelectedTemporaryTechnician();
   const [issues, setIssues] = useState<TechnicianIssue[]>([]);
+  const [activeAssignments, setActiveAssignments] = useState<
+    IssueAssignment[]
+  >([]);
   const [isLoading, setIsLoading] = useState(true);
   const [updatingIssueId, setUpdatingIssueId] = useState<string | null>(null);
   const [noteIssueId, setNoteIssueId] = useState<string | null>(null);
   const [noteStatus, setNoteStatus] = useState<
-    "retrieving_parts" | "director_assistance_requested" | null
+    | "retrieving_parts"
+    | "director_assistance_requested"
+    | "additional_technician_requested"
+    | null
   >(null);
   const [requiredNote, setRequiredNote] = useState("");
   const [noteValidation, setNoteValidation] = useState<string | null>(null);
@@ -144,6 +201,9 @@ export default function TechnicianConsolePage() {
     Record<string, string>
   >({});
   const [latestStatusUpdateTimes, setLatestStatusUpdateTimes] = useState<
+    Record<string, string>
+  >({});
+  const [latestPreviousStatuses, setLatestPreviousStatuses] = useState<
     Record<string, string>
   >({});
   const [historyReadWarning, setHistoryReadWarning] = useState<
@@ -158,20 +218,95 @@ export default function TechnicianConsolePage() {
   );
   const [mapAssistIssue, setMapAssistIssue] =
     useState<TechnicianIssue | null>(null);
+  const [, setQueryDiagnostics] = useState(
+    initialQueryDiagnostics,
+  );
+  const [mobileSection, setMobileSection] =
+    useState<MobileSection>("assigned");
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const hasSelectedMobileSection = useRef(false);
+
+  const updateQueryDiagnostic = useCallback(
+    (
+      query: TechnicianQueryName,
+      diagnostic: TechnicianQueryDiagnostic,
+    ) => {
+      setQueryDiagnostics((current) => ({
+        ...current,
+        [query]: diagnostic,
+      }));
+    },
+    [],
+  );
+  const updateMapAssistDiagnostic = useCallback(
+    (
+      status: "loading" | "loaded" | "error",
+      error: string | null,
+    ) => {
+      updateQueryDiagnostic("map assist data", { status, error });
+    },
+    [updateQueryDiagnostic],
+  );
 
   const fetchIssues = useCallback(async () => {
-    if (!activeShow) {
-      return { data: [], error: null };
+    if (
+      !activeShow ||
+      !activeSession ||
+      activeSession.show_id !== activeShow.id
+    ) {
+      return {
+        assignments: [],
+        data: [],
+        error: null,
+        failedQuery: null,
+      };
     }
 
-    return supabase
+    const { data: assignmentData, error: assignmentError } =
+      await fetchActiveIssueAssignments({
+        sessionId: activeSession.id,
+        showId: activeShow.id,
+        technicianId: selectedTechnician,
+      });
+
+    if (assignmentError) {
+      return {
+        assignments: [],
+        data: [],
+        error: assignmentError,
+        failedQuery: "assignments" as const,
+      };
+    }
+
+    const assignments = (assignmentData ?? []) as IssueAssignment[];
+    const issueIds = assignments.map((assignment) => assignment.issue_id);
+
+    if (issueIds.length === 0) {
+      return {
+        assignments,
+        data: [],
+        error: null,
+        failedQuery: null,
+      };
+    }
+
+    const { data, error } = await supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, position_name, effect_name, status, created_at, updated_at",
+        "id, channel_number, cue_value, issue_type, position_name, effect_name, status, session_id, created_at, updated_at",
       )
       .eq("show_id", activeShow.id)
+      .eq("session_id", activeSession.id)
+      .in("id", issueIds)
       .order("created_at", { ascending: false });
-  }, [activeShow, supabase]);
+
+    return {
+      assignments,
+      data,
+      error,
+      failedQuery: error ? ("issues" as const) : null,
+    };
+  }, [activeSession, activeShow, selectedTechnician, supabase]);
 
   const refreshLatestNotes = useCallback(
     async (issueRecords: TechnicianIssue[]) => {
@@ -181,28 +316,61 @@ export default function TechnicianConsolePage() {
         setLatestIssueNotes({});
         setLatestNotFixedNotes({});
         setLatestStatusUpdateTimes({});
+        setLatestPreviousStatuses({});
         setHistoryReadWarning(null);
+        updateQueryDiagnostic("status history", {
+          status: "loaded",
+          error: null,
+        });
         return;
       }
 
-      const { data, error } = await supabase
-        .from("issue_status_history")
-        .select("issue_id, new_status, note, created_at")
-        .in("issue_id", issueIds)
-        .order("created_at", { ascending: false });
+      updateQueryDiagnostic("status history", {
+        status: "loading",
+        error: null,
+      });
+
+      let data;
+      let error;
+
+      try {
+        const result = await supabase
+          .from("issue_status_history")
+          .select("issue_id, new_status, note, old_status, created_at")
+          .in("issue_id", issueIds)
+          .order("created_at", { ascending: false });
+        data = result.data;
+        error = result.error;
+      } catch (queryError) {
+        error = {
+          message:
+            queryError instanceof Error
+              ? queryError.message
+              : "Unknown status history fetch failure.",
+        };
+      }
 
       if (error) {
         setLatestIssueNotes({});
         setLatestNotFixedNotes({});
         setLatestStatusUpdateTimes({});
+        setLatestPreviousStatuses({});
         setHistoryReadWarning(getHistoryReadFailureMessage(error.message));
+        updateQueryDiagnostic("status history", {
+          status: "error",
+          error: error.message,
+        });
         return;
       }
 
       const notes: Record<string, string> = {};
       const notFixedNotes: Record<string, string> = {};
       const statusUpdateTimes: Record<string, string> = {};
+      const previousStatuses: Record<string, string> = {};
       const latestEventsSeen = new Set<string>();
+      const currentStatuses = new Map(
+        issueRecords.map((issue) => [issue.id, issue.status]),
+      );
 
       for (const history of (data ?? []) as IssueHistoryNote[]) {
         if (!latestEventsSeen.has(history.issue_id)) {
@@ -225,57 +393,103 @@ export default function TechnicianConsolePage() {
         }
 
         if (
-          history.created_at &&
+          history.new_status === currentStatuses.get(history.issue_id) &&
           !statusUpdateTimes[history.issue_id]
         ) {
-          statusUpdateTimes[history.issue_id] = history.created_at;
+          if (history.created_at) {
+            statusUpdateTimes[history.issue_id] = history.created_at;
+          }
+          if (history.old_status) {
+            previousStatuses[history.issue_id] = history.old_status;
+          }
         }
       }
 
       setLatestIssueNotes(notes);
       setLatestNotFixedNotes(notFixedNotes);
       setLatestStatusUpdateTimes(statusUpdateTimes);
+      setLatestPreviousStatuses(previousStatuses);
       setHistoryReadWarning(null);
+      updateQueryDiagnostic("status history", {
+        status: "loaded",
+        error: null,
+      });
     },
-    [supabase],
+    [supabase, updateQueryDiagnostic],
   );
 
   const refreshIssues = useCallback(async () => {
-    const { data, error } = await fetchIssues();
+    updateQueryDiagnostic("issues", {
+      status: "loading",
+      error: null,
+    });
 
-    if (error) {
+    try {
+      updateQueryDiagnostic("assignments", {
+        status: "loading",
+        error: null,
+      });
+      const { assignments, data, error, failedQuery } = await fetchIssues();
+
+      if (error) {
+        const queryName = failedQuery ?? "issues";
+        setFeedback({
+          type: "error",
+          message: `Could not load technician ${queryName}: ${error.message}`,
+        });
+        updateQueryDiagnostic(queryName, {
+          status: "error",
+          error: error.message,
+        });
+        return;
+      }
+
+      setActiveAssignments(assignments);
+      updateQueryDiagnostic("assignments", {
+        status: "loaded",
+        error: null,
+      });
+      const nextIssues = (data ?? []) as TechnicianIssue[];
+      setIssues(nextIssues);
+      setFeedback((current) =>
+        current?.type === "error" ? null : current,
+      );
+      updateQueryDiagnostic("issues", {
+        status: "loaded",
+        error: null,
+      });
+      await refreshLatestNotes(nextIssues);
+    } catch (queryError) {
+      const errorMessage =
+        queryError instanceof Error
+          ? queryError.message
+          : "Unknown issues fetch failure.";
       setFeedback({
         type: "error",
-        message: `Could not load technician issues: ${error.message}`,
+        message: `Could not load technician issues: ${errorMessage}`,
       });
-      return;
+      updateQueryDiagnostic("assignments", {
+        status: "error",
+        error: errorMessage,
+      });
+      updateQueryDiagnostic("issues", {
+        status: "error",
+        error: errorMessage,
+      });
     }
-
-    const nextIssues = (data ?? []) as TechnicianIssue[];
-    setIssues(nextIssues);
-    await refreshLatestNotes(nextIssues);
-  }, [fetchIssues, refreshLatestNotes]);
+  }, [fetchIssues, refreshLatestNotes, updateQueryDiagnostic]);
 
   useEffect(() => {
     const loadIssues = async () => {
-      const { data, error } = await fetchIssues();
-
-      if (error) {
-        setFeedback({
-          type: "error",
-          message: `Could not load technician issues: ${error.message}`,
-        });
-      } else {
-        const nextIssues = (data ?? []) as TechnicianIssue[];
-        setIssues(nextIssues);
-        await refreshLatestNotes(nextIssues);
+      try {
+        await refreshIssues();
+      } finally {
+        setIsLoading(false);
       }
-
-      setIsLoading(false);
     };
 
     void loadIssues();
-  }, [fetchIssues, refreshLatestNotes]);
+  }, [refreshIssues]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -299,25 +513,44 @@ export default function TechnicianConsolePage() {
       );
   }, [refreshIssues]);
 
-  const assignedIssues = useMemo(
+  const assignmentTimes = useMemo(
     () =>
-      issues.filter(
-        (issue) =>
-          assignments[issue.id] === selectedTechnician ||
-          additionalAssignments[issue.id] === selectedTechnician,
-      ),
-    [
-      additionalAssignments,
-      assignments,
-      issues,
-      selectedTechnician,
-    ],
+      Object.fromEntries(
+        activeAssignments.map((assignment) => [
+          assignment.issue_id,
+          assignment.assigned_at,
+        ]),
+      ) as Record<string, string>,
+    [activeAssignments],
+  );
+
+  const assignedIssues = issues;
+
+  const isDirectorReturnedRetrievingParts = useCallback(
+    (issue: TechnicianIssue) => {
+      const assignment = activeAssignments.find(
+        (currentAssignment) =>
+          currentAssignment.issue_id === issue.id,
+      );
+
+      return (
+        issue.status === "retrieving_parts" &&
+        !assignment?.acknowledged_at &&
+        latestPreviousStatuses[issue.id] ===
+          "director_assistance_requested"
+      );
+    },
+    [activeAssignments, latestPreviousStatuses],
   );
 
   const workingIssues = useMemo(
     () =>
       assignedIssues
-        .filter((issue) => issue.status === "in_progress")
+        .filter(
+          (issue) =>
+            workingStatuses.has(issue.status) &&
+            !isDirectorReturnedRetrievingParts(issue),
+        )
         .sort((a, b) => {
           const aTime =
             latestStatusUpdateTimes[a.id] ??
@@ -332,7 +565,11 @@ export default function TechnicianConsolePage() {
 
           return getTimestampValue(bTime) - getTimestampValue(aTime);
         }),
-    [assignedIssues, latestStatusUpdateTimes],
+    [
+      assignedIssues,
+      isDirectorReturnedRetrievingParts,
+      latestStatusUpdateTimes,
+    ],
   );
 
   const fieldResponseIssues = useMemo(
@@ -341,7 +578,8 @@ export default function TechnicianConsolePage() {
         .filter(
           (issue) =>
             activeStatuses.has(issue.status) &&
-            issue.status !== "in_progress",
+            (!workingStatuses.has(issue.status) ||
+              isDirectorReturnedRetrievingParts(issue)),
         )
         .sort((a, b) => {
           const aIsQueued = a.status === "assigned";
@@ -351,14 +589,8 @@ export default function TechnicianConsolePage() {
             return aIsQueued ? -1 : 1;
           }
 
-          const aAssignmentTime =
-            assignments[a.id] === selectedTechnician
-              ? assignmentTimes[a.id]
-              : additionalAssignmentTimes[a.id];
-          const bAssignmentTime =
-            assignments[b.id] === selectedTechnician
-              ? assignmentTimes[b.id]
-              : additionalAssignmentTimes[b.id];
+          const aAssignmentTime = assignmentTimes[a.id];
+          const bAssignmentTime = assignmentTimes[b.id];
           const aTime =
             (aIsQueued ? aAssignmentTime : latestStatusUpdateTimes[a.id]) ??
             a.updated_at ??
@@ -373,13 +605,27 @@ export default function TechnicianConsolePage() {
           return getTimestampValue(aTime) - getTimestampValue(bTime);
         }),
     [
-      additionalAssignmentTimes,
       assignedIssues,
       assignmentTimes,
-      assignments,
+      isDirectorReturnedRetrievingParts,
       latestStatusUpdateTimes,
-      selectedTechnician,
     ],
+  );
+
+  const mobileAssignedIssues = useMemo(
+    () =>
+      fieldResponseIssues.filter(
+        (issue) => !awaitingDirectorStatuses.has(issue.status),
+      ),
+    [fieldResponseIssues],
+  );
+
+  const awaitingDirectorIssues = useMemo(
+    () =>
+      fieldResponseIssues.filter((issue) =>
+        awaitingDirectorStatuses.has(issue.status),
+      ),
+    [fieldResponseIssues],
   );
 
   const resolutionNotices = useMemo(() => {
@@ -397,6 +643,52 @@ export default function TechnicianConsolePage() {
     resolutionAcknowledgements,
     selectedTechnician,
   ]);
+
+  useEffect(() => {
+    if (isLoading || hasSelectedMobileSection.current) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (hasSelectedMobileSection.current) {
+        return;
+      }
+
+      const initialSection: MobileSection =
+        workingIssues.length > 0
+          ? "working"
+          : mobileAssignedIssues.length > 0
+            ? "assigned"
+            : awaitingDirectorIssues.length > 0
+              ? "awaiting-director"
+              : resolutionNotices.length > 0
+                ? "resolutions"
+                : "assigned";
+
+      hasSelectedMobileSection.current = true;
+      setMobileSection(initialSection);
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    awaitingDirectorIssues.length,
+    isLoading,
+    mobileAssignedIssues.length,
+    resolutionNotices.length,
+    workingIssues.length,
+  ]);
+
+  const selectMobileSection = (section: MobileSection) => {
+    hasSelectedMobileSection.current = true;
+    setMobileSection(section);
+  };
+
+  const clearActiveShow = () => {
+    setActiveContinuitySession(null);
+    setActiveShow(null);
+    setIsMobileMenuOpen(false);
+    router.push("/shows");
+  };
 
   const outgoingHandoffNotices = useMemo(
     () =>
@@ -418,10 +710,36 @@ export default function TechnicianConsolePage() {
     [handoffs, selectedTechnician],
   );
 
+  const acknowledgeActiveWork = async (issueId: string) => {
+    const acknowledgedAt = new Date().toISOString();
+    const { error } = await setActiveIssueAssignmentAcknowledgedAt(
+      issueId,
+      acknowledgedAt,
+    );
+
+    if (error) {
+      setFeedback({
+        type: "error",
+        message: `Could not start work: ${error.message}`,
+      });
+      return false;
+    }
+
+    setActiveAssignments((currentAssignments) =>
+      currentAssignments.map((assignment) =>
+        assignment.issue_id === issueId
+          ? { ...assignment, acknowledged_at: acknowledgedAt }
+          : assignment,
+      ),
+    );
+    return true;
+  };
+
   const updateIssueStatus = async (
     issue: TechnicianIssue,
     status: string,
     note: string | null = null,
+    onSuccess?: () => void,
   ) => {
     if (!activeShow) {
       return;
@@ -430,6 +748,16 @@ export default function TechnicianConsolePage() {
     setUpdatingIssueId(issue.id);
     setFeedback(null);
     setHistoryWarning(null);
+
+    if (
+      (status === "in_progress" ||
+        (status === "retrieving_parts" &&
+          issue.status !== "retrieving_parts")) &&
+      !(await acknowledgeActiveWork(issue.id))
+    ) {
+      setUpdatingIssueId(null);
+      return;
+    }
 
     const { error } = await supabase
       .from("issues")
@@ -484,6 +812,40 @@ export default function TechnicianConsolePage() {
       setNoteStatus(null);
       setRequiredNote("");
       setNoteValidation(null);
+      onSuccess?.();
+    }
+
+    setUpdatingIssueId(null);
+  };
+
+  const startWorking = async (
+    issue: TechnicianIssue,
+    isMobileCard: boolean,
+  ) => {
+    if (issue.status !== "retrieving_parts") {
+      await updateIssueStatus(
+        issue,
+        "in_progress",
+        null,
+        isMobileCard
+          ? () => showMobileWorkingIssue(issue.id)
+          : undefined,
+      );
+      return;
+    }
+
+    setUpdatingIssueId(issue.id);
+    setFeedback(null);
+
+    if (await acknowledgeActiveWork(issue.id)) {
+      setFeedback({
+        type: "success",
+        message: "Work started. Issue remains Retrieving Parts.",
+      });
+
+      if (isMobileCard) {
+        showMobileWorkingIssue(issue.id);
+      }
     }
 
     setUpdatingIssueId(null);
@@ -550,14 +912,38 @@ export default function TechnicianConsolePage() {
     );
   };
 
-  const renderIssueCard = (issue: TechnicianIssue) => {
+  const showMobileWorkingIssue = (issueId: string) => {
+    hasSelectedMobileSection.current = true;
+    setMobileSection("working");
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-mobile-issue-id="${issueId}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+  };
+
+  const renderIssueCard = (
+    issue: TechnicianIssue,
+    isMobileCard = false,
+  ) => {
     const isUpdating = updatingIssueId === issue.id;
     const notFixedNote = latestNotFixedNotes[issue.id];
+    const activeAssignment = activeAssignments.find(
+      (assignment) => assignment.issue_id === issue.id,
+    );
+    const isActivelyWorking =
+      issue.status === "in_progress" ||
+      (issue.status === "retrieving_parts" &&
+        Boolean(activeAssignment?.acknowledged_at));
 
     return (
       <article
         key={issue.id}
-        className="rounded-lg border border-white/10 bg-[#070b18] p-5"
+        className="rounded-lg border border-white/10 bg-[#070b18] p-4 md:p-5"
+        data-mobile-issue-id={isMobileCard ? issue.id : undefined}
       >
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="grid gap-2">
@@ -573,8 +959,14 @@ export default function TechnicianConsolePage() {
             </p>
             {issue.position_name ? (
               <button
-                className="w-fit text-sm font-semibold text-[#fbbf24] transition hover:text-[#fde68a]"
-                onClick={() => setMapAssistIssue(issue)}
+                className="flex min-h-11 w-fit touch-manipulation items-center text-sm font-semibold text-[#fbbf24] transition active:text-[#fde68a] md:min-h-0 md:hover:text-[#fde68a]"
+                onClick={() => {
+                  updateQueryDiagnostic("map assist data", {
+                    status: "loading",
+                    error: null,
+                  });
+                  setMapAssistIssue(issue);
+                }}
                 type="button"
               >
                 Show on Map
@@ -608,7 +1000,7 @@ export default function TechnicianConsolePage() {
             </span>
             <Link
               href={`/issues/${issue.id}`}
-              className="text-sm font-semibold text-[#c4b5fd] hover:text-white"
+              className="flex min-h-11 touch-manipulation items-center text-sm font-semibold text-[#c4b5fd] active:text-white md:min-h-0 md:hover:text-white"
             >
               View Issue
             </Link>
@@ -617,7 +1009,7 @@ export default function TechnicianConsolePage() {
 
         <div className="mt-5 flex flex-wrap gap-2 border-t border-white/10 pt-4">
           {STATUS_ACTIONS.filter((action) => {
-            if (issue.status === "in_progress") {
+            if (isActivelyWorking) {
               return action.status !== "in_progress";
             }
 
@@ -630,7 +1022,8 @@ export default function TechnicianConsolePage() {
               onClick={() => {
                 if (
                   action.status === "retrieving_parts" ||
-                  action.status === "director_assistance_requested"
+                  action.status === "director_assistance_requested" ||
+                  action.status === "additional_technician_requested"
                 ) {
                   setNoteIssueId(issue.id);
                   setNoteStatus(action.status);
@@ -641,9 +1034,18 @@ export default function TechnicianConsolePage() {
                   return;
                 }
 
-                void updateIssueStatus(issue, action.status);
+                if (action.status === "in_progress") {
+                  void startWorking(issue, isMobileCard);
+                  return;
+                }
+
+                void updateIssueStatus(
+                  issue,
+                  action.status,
+                  null,
+                );
               }}
-              className={`rounded-md border px-3 py-2 text-xs font-semibold transition hover:brightness-125 disabled:cursor-wait disabled:opacity-50 ${action.className}`}
+              className={`min-h-12 flex-1 basis-[calc(50%-0.25rem)] touch-manipulation rounded-md border px-3 py-2 text-sm font-semibold transition active:brightness-125 disabled:cursor-wait disabled:opacity-50 md:min-h-0 md:flex-none md:basis-auto md:text-xs md:hover:brightness-125 ${action.className}`}
             >
               {isUpdating ? "Updating..." : action.label}
             </button>
@@ -654,7 +1056,9 @@ export default function TechnicianConsolePage() {
             <label className="grid gap-2 text-sm font-semibold text-[#fde68a]">
               {noteStatus === "director_assistance_requested"
                 ? "Director Assistance Note"
-                : "Retrieving Parts Note"}
+                : noteStatus === "additional_technician_requested"
+                  ? "Additional Technician Request Note"
+                  : "Retrieving Parts Note"}
               <textarea
                 className="min-h-20 resize-y rounded-md border border-white/15 bg-[#020617] p-3 text-sm text-white outline-none focus:border-[#f59e0b]"
                 onChange={(event) => {
@@ -664,7 +1068,9 @@ export default function TechnicianConsolePage() {
                 placeholder={
                   noteStatus === "director_assistance_requested"
                     ? "Required: explain what help is needed"
-                    : "Required: describe the parts being retrieved"
+                    : noteStatus === "additional_technician_requested"
+                      ? "Required: explain why another technician is needed"
+                      : "Required: describe the parts being retrieved"
                 }
                 value={requiredNote}
               />
@@ -676,12 +1082,14 @@ export default function TechnicianConsolePage() {
             ) : null}
             <div className="mt-3 flex gap-2">
               <button
-                className="rounded-md bg-[#b45309] px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="min-h-12 flex-1 touch-manipulation rounded-md bg-[#b45309] px-3 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:flex-none md:text-xs"
                 disabled={isUpdating}
                 onClick={() => {
                   if (!requiredNote.trim()) {
                     setNoteValidation(
-                      "A short note is required before changing this status.",
+                      noteStatus === "additional_technician_requested"
+                        ? "Add a note before requesting another technician."
+                        : "A short note is required before changing this status.",
                     );
                     return;
                   }
@@ -699,7 +1107,7 @@ export default function TechnicianConsolePage() {
                 Submit Note & Update Status
               </button>
               <button
-                className="rounded-md border border-white/15 px-3 py-2 text-xs font-semibold text-[#cbd5e1]"
+                className="min-h-12 touch-manipulation rounded-md border border-white/15 px-3 py-2 text-sm font-semibold text-[#cbd5e1] md:min-h-0 md:text-xs"
                 onClick={() => {
                   setNoteIssueId(null);
                   setNoteStatus(null);
@@ -717,16 +1125,129 @@ export default function TechnicianConsolePage() {
     );
   };
 
+  const renderResolutionNotice = (issue: TechnicianIssue) => (
+    <article
+      className="rounded-lg border border-white/10 bg-[#070b18] p-4"
+      key={issue.id}
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-sm text-[#dbe4ef]">
+            <IssueIdentifiers
+              channelNumber={issue.channel_number}
+              cueValue={issue.cue_value}
+              issueType={issue.issue_type}
+            />
+          </p>
+          <span
+            className={`mt-2 inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${getIssueStatusClassName(issue.status)}`}
+          >
+            {formatIssueLabel(issue.status)}
+          </span>
+          {latestIssueNotes[issue.id] ? (
+            <p className="mt-3 text-sm italic leading-6 text-[#cbd5e1]">
+              Note: {latestIssueNotes[issue.id]}
+            </p>
+          ) : issue.status === "unfixable" ? (
+            <p className="mt-3 text-sm italic leading-6 text-[#cbd5e1]">
+              Note: No unfixable note provided.
+            </p>
+          ) : null}
+        </div>
+        <button
+          className="min-h-12 touch-manipulation rounded-md border border-[#8b5cf6]/45 bg-[#1b1235] px-4 py-3 text-sm font-semibold text-[#d8c8ff] transition active:border-[#a78bfa] md:min-h-0 md:px-3 md:py-2 md:text-xs md:hover:border-[#a78bfa]"
+          onClick={() =>
+            acknowledgeResolutionNotice(selectedTechnician, issue.id)
+          }
+          type="button"
+        >
+          Acknowledge & Remove
+        </button>
+      </div>
+    </article>
+  );
+
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-5 py-6 sm:px-8 lg:py-8">
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 pb-28 pt-0 md:gap-6 md:px-8 md:py-6 lg:py-8">
+      <header className="sticky top-0 z-40 -mx-3 flex min-h-16 items-center justify-between gap-3 border-b border-white/10 bg-[#070b18]/95 px-4 py-2 shadow-xl shadow-black/30 backdrop-blur md:hidden">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-bold text-white">
+            {activeShow?.name ?? "No active show"}
+          </p>
+          <p className="truncate text-xs text-[#94a3b8]">
+            {activeSession &&
+            activeSession.show_id === activeShow?.id
+              ? activeSession.name
+              : "No active session"}
+            {" · "}
+            {getTemporaryTechnicianLabel(selectedTechnician)}
+          </p>
+        </div>
+        <div className="relative shrink-0">
+          <button
+            aria-expanded={isMobileMenuOpen}
+            aria-label="Open technician menu"
+            className="flex h-11 w-11 touch-manipulation items-center justify-center rounded-lg border border-white/15 bg-[#0d1324] text-white active:bg-[#17102c]"
+            onClick={() => setIsMobileMenuOpen((isOpen) => !isOpen)}
+            type="button"
+          >
+            <svg
+              aria-hidden="true"
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <path
+                d="M4 7h16M4 12h16M4 17h16"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeWidth="2"
+              />
+            </svg>
+          </button>
+          {isMobileMenuOpen ? (
+            <div className="absolute right-0 top-12 z-50 grid w-56 overflow-hidden rounded-lg border border-white/15 bg-[#0b1020] p-2 shadow-2xl shadow-black/60">
+              <Link
+                className="flex min-h-11 items-center rounded-md px-3 text-sm font-semibold text-[#dbe4ef] active:bg-white/10"
+                href="/shows"
+                onClick={() => setIsMobileMenuOpen(false)}
+              >
+                Shows
+              </Link>
+              <Link
+                className="flex min-h-11 items-center rounded-md bg-[#17102c] px-3 text-sm font-semibold text-white"
+                href="/technician"
+                onClick={() => setIsMobileMenuOpen(false)}
+              >
+                Technician Console
+              </Link>
+              <button
+                className="min-h-11 rounded-md px-3 text-left text-sm font-semibold text-[#fecaca] active:bg-[#2a0b13]"
+                onClick={clearActiveShow}
+                type="button"
+              >
+                Clear Active Show
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </header>
+
       {activeShow && mapAssistIssue?.position_name ? (
         <TechnicianMapAssist
-          onClose={() => setMapAssistIssue(null)}
+          onDataState={updateMapAssistDiagnostic}
+          onClose={() => {
+            setMapAssistIssue(null);
+            updateQueryDiagnostic("map assist data", {
+              status: "idle",
+              error: null,
+            });
+          }}
           positionName={mapAssistIssue.position_name}
           showId={activeShow.id}
         />
       ) : null}
-      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25">
+      <section className="hidden rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25 md:block">
         <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#a78bfa]">
           Technician Console
         </p>
@@ -873,11 +1394,107 @@ export default function TechnicianConsolePage() {
         </section>
       ) : null}
 
-      <section className="rounded-lg border border-[#3b82f6]/25 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20">
+      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-3 shadow-xl shadow-black/20 md:hidden">
+        <div className="flex items-center justify-between gap-3 px-1 pb-3">
+          <div>
+            <h1 className="text-lg font-semibold text-white">
+              {mobileSection === "working"
+                ? "I'm Working"
+                : mobileSection === "awaiting-director"
+                  ? "Awaiting Director"
+                : mobileSection === "resolutions"
+                  ? "Resolution Notices"
+                  : "Assigned to Me"}
+            </h1>
+            <p className="mt-1 text-xs text-[#94a3b8]">
+              {mobileSection === "working"
+                ? "Issues currently in progress."
+                : mobileSection === "awaiting-director"
+                  ? "Issues waiting for Director action or verification."
+                : mobileSection === "resolutions"
+                  ? "Completed outcomes awaiting acknowledgement."
+                  : "Assignments ready for your response."}
+            </p>
+          </div>
+          <span className="rounded-md border border-white/10 bg-[#070b18] px-2.5 py-1 text-xs font-bold text-[#dbe4ef]">
+            {mobileSection === "working"
+              ? workingIssues.length
+              : mobileSection === "awaiting-director"
+                ? awaitingDirectorIssues.length
+              : mobileSection === "resolutions"
+                ? resolutionNotices.length
+                : mobileAssignedIssues.length}
+          </span>
+        </div>
+
+        {feedback ? (
+          <p
+            className={`mb-3 rounded-lg border p-3 text-sm font-semibold ${
+              feedback.type === "success"
+                ? "border-[#22c55e]/40 bg-[#082515] text-[#bbf7d0]"
+                : "border-[#ef4444]/40 bg-[#2a0b13] text-[#fecaca]"
+            }`}
+          >
+            {feedback.message}
+          </p>
+        ) : null}
+        {historyWarning ? (
+          <p className="mb-3 rounded-lg border border-[#f59e0b]/45 bg-[#2a1c06] p-3 text-sm font-semibold leading-6 text-[#fde68a]">
+            {historyWarning}
+          </p>
+        ) : null}
+        {mobileSection === "resolutions" && historyReadWarning ? (
+          <p className="mb-3 rounded-lg border border-[#f59e0b]/45 bg-[#2a1c06] p-3 text-xs font-semibold leading-5 text-[#fde68a]">
+            {historyReadWarning}
+          </p>
+        ) : null}
+
+        <div className="grid gap-3">
+          {isLoading ? (
+            <p className="p-4 text-sm text-[#94a3b8]">
+              Loading assigned issues...
+            </p>
+          ) : mobileSection === "working" ? (
+            workingIssues.length > 0 ? (
+              workingIssues.map((issue) => renderIssueCard(issue, true))
+            ) : (
+              <p className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-5 text-center text-sm text-[#94a3b8]">
+                No issues currently being worked.
+              </p>
+            )
+          ) : mobileSection === "awaiting-director" ? (
+            awaitingDirectorIssues.length > 0 ? (
+              awaitingDirectorIssues.map((issue) =>
+                renderIssueCard(issue, true),
+              )
+            ) : (
+              <p className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-5 text-center text-sm text-[#94a3b8]">
+                No issues awaiting Director action.
+              </p>
+            )
+          ) : mobileSection === "resolutions" ? (
+            resolutionNotices.length > 0 ? (
+              resolutionNotices.map(renderResolutionNotice)
+            ) : (
+              <p className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-5 text-center text-sm text-[#94a3b8]">
+                No resolution notices.
+              </p>
+            )
+          ) : mobileAssignedIssues.length > 0 ? (
+            mobileAssignedIssues.map((issue) => renderIssueCard(issue, true))
+          ) : (
+            <p className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-5 text-center text-sm text-[#94a3b8]">
+              No issues waiting for field response.
+            </p>
+          )}
+        </div>
+      </section>
+
+      <section className="hidden rounded-lg border border-[#3b82f6]/25 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20 md:block">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-xl font-semibold text-white">
-              Working
+              I&apos;m Working
             </h2>
             <p className="mt-2 text-sm text-[#94a3b8]">
               Issues currently being worked by the selected technician.
@@ -934,48 +1551,80 @@ export default function TechnicianConsolePage() {
               </p>
             </div>
           ) : (
-            workingIssues.map(renderIssueCard)
+            workingIssues.map((issue) => renderIssueCard(issue))
           )}
         </div>
       </section>
 
-      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20">
+      <section className="hidden rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20 md:block">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold text-white">
-              Field Response Queue
+              Assigned to Me
             </h2>
             <p className="mt-2 text-sm text-[#94a3b8]">
-              Waiting assignments and field responses, ordered for the
+              Assignments and field responses ordered for the
               technician&apos;s next action.
             </p>
           </div>
           <span className="rounded-md border border-white/10 bg-[#070b18] px-2 py-1 text-xs font-bold text-[#cbd5e1]">
-            {fieldResponseIssues.length}
+            {mobileAssignedIssues.length}
           </span>
         </div>
 
         <div className="mt-5 grid gap-4">
           {isLoading ? (
             <p className="text-sm text-[#94a3b8]">
-              Loading field response queue...
+              Loading assigned issues...
             </p>
-          ) : fieldResponseIssues.length === 0 ? (
+          ) : mobileAssignedIssues.length === 0 ? (
             <div className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-6 text-center">
               <p className="font-semibold text-[#dbe4ef]">
-                No issues waiting in the field response queue.
+                No issues assigned to this technician.
               </p>
               <p className="mt-2 text-sm text-[#94a3b8]">
                 New assignments will appear here until work begins.
               </p>
             </div>
           ) : (
-            fieldResponseIssues.map(renderIssueCard)
+            mobileAssignedIssues.map((issue) => renderIssueCard(issue))
           )}
         </div>
       </section>
 
-      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-5 shadow-xl shadow-black/20">
+      <section className="hidden rounded-lg border border-[#f59e0b]/25 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20 md:block">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-white">
+              Awaiting Director
+            </h2>
+            <p className="mt-2 text-sm text-[#94a3b8]">
+              Technician action is complete and Director follow-up is pending.
+            </p>
+          </div>
+          <span className="rounded-md border border-white/10 bg-[#070b18] px-2 py-1 text-xs font-bold text-[#cbd5e1]">
+            {awaitingDirectorIssues.length}
+          </span>
+        </div>
+
+        <div className="mt-5 grid gap-4">
+          {isLoading ? (
+            <p className="text-sm text-[#94a3b8]">
+              Loading Director follow-up issues...
+            </p>
+          ) : awaitingDirectorIssues.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-6 text-center">
+              <p className="font-semibold text-[#dbe4ef]">
+                No issues awaiting Director action.
+              </p>
+            </div>
+          ) : (
+            awaitingDirectorIssues.map((issue) => renderIssueCard(issue))
+          )}
+        </div>
+      </section>
+
+      <section className="hidden rounded-lg border border-white/10 bg-[#0b1020]/90 p-5 shadow-xl shadow-black/20 md:block">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-white">
@@ -1001,53 +1650,121 @@ export default function TechnicianConsolePage() {
               No resolution notices.
             </p>
           ) : (
-            resolutionNotices.map((issue) => (
-              <article
-                className="rounded-lg border border-white/10 bg-[#070b18] p-4"
-                key={issue.id}
-              >
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
-                    <p className="text-sm text-[#dbe4ef]">
-                      <IssueIdentifiers
-                        channelNumber={issue.channel_number}
-                        cueValue={issue.cue_value}
-                        issueType={issue.issue_type}
-                      />
-                    </p>
-                    <span
-                      className={`mt-2 inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${getIssueStatusClassName(issue.status)}`}
-                    >
-                      {formatIssueLabel(issue.status)}
-                    </span>
-                    {latestIssueNotes[issue.id] ? (
-                      <p className="mt-3 text-sm italic leading-6 text-[#cbd5e1]">
-                        Note: {latestIssueNotes[issue.id]}
-                      </p>
-                    ) : issue.status === "unfixable" ? (
-                      <p className="mt-3 text-sm italic leading-6 text-[#cbd5e1]">
-                        Note: No unfixable note provided.
-                      </p>
-                    ) : null}
-                  </div>
-                  <button
-                    className="rounded-md border border-[#8b5cf6]/45 bg-[#1b1235] px-3 py-2 text-xs font-semibold text-[#d8c8ff] transition hover:border-[#a78bfa]"
-                    onClick={() =>
-                      acknowledgeResolutionNotice(
-                        selectedTechnician,
-                        issue.id,
-                      )
-                    }
-                    type="button"
-                  >
-                    Acknowledge & Remove
-                  </button>
-                </div>
-              </article>
-            ))
+            resolutionNotices.map(renderResolutionNotice)
           )}
         </div>
       </section>
+
+      <nav
+        aria-label="Technician queue sections"
+        className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-white/10 bg-[#070b18]/98 px-1 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_30px_rgba(0,0,0,0.45)] backdrop-blur md:hidden"
+      >
+        {(
+          [
+            {
+              id: "assigned" as const,
+              label: "Assigned",
+              count: mobileAssignedIssues.length,
+              icon: (
+                <path
+                  d="M7 5h10M7 9h10M7 13h6M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
+              ),
+            },
+            {
+              id: "working" as const,
+              label: "Working",
+              count: workingIssues.length,
+              icon: (
+                <path
+                  d="m14.7 6.3 3-3a4 4 0 0 1-5 5l-7.6 7.6a2 2 0 1 0 2.8 2.8l7.6-7.6a4 4 0 0 1 5-5l-3 3-2.8-2.8Z"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
+              ),
+            },
+            {
+              id: "awaiting-director" as const,
+              label: "Awaiting Director",
+              count: awaitingDirectorIssues.length,
+              icon: (
+                <path
+                  d="M12 7v5l3 2M5 3v4H1M19 21v-4h4M4.9 7A9 9 0 0 1 20 5.5M19.1 17A9 9 0 0 1 4 18.5"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
+              ),
+            },
+            {
+              id: "resolutions" as const,
+              label: "Resolution Notices",
+              count: resolutionNotices.length,
+              icon: (
+                <path
+                  d="M5 12.5 9.2 17 19 7M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
+              ),
+            },
+          ] satisfies {
+            id: MobileSection;
+            label: string;
+            count: number;
+            icon: React.ReactNode;
+          }[]
+        ).map((item) => {
+          const isActive = mobileSection === item.id;
+          const needsAttention = item.count > 0 && !isActive;
+
+          return (
+            <button
+              aria-current={isActive ? "page" : undefined}
+              className={`relative flex min-h-16 touch-manipulation flex-col items-center justify-center gap-1 rounded-lg px-0.5 text-[10px] font-semibold leading-tight transition ${
+                isActive
+                  ? "bg-[#4c00a4]/35 text-white shadow-inner shadow-[#8b5cf6]/20"
+                  : "text-[#94a3b8] active:bg-white/10"
+              } ${needsAttention ? "motion-safe:animate-pulse text-[#d8c8ff]" : ""}`}
+              key={item.id}
+              onClick={() => selectMobileSection(item.id)}
+              type="button"
+            >
+              <span className="relative">
+                <svg
+                  aria-hidden="true"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  {item.icon}
+                </svg>
+                {item.count > 0 ? (
+                  <span
+                    className={`absolute -right-3 -top-2 flex min-h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-bold ${
+                      isActive
+                        ? "bg-[#a78bfa] text-[#130a2b]"
+                        : "bg-[#7c3aed] text-white"
+                    }`}
+                  >
+                    {item.count}
+                  </span>
+                ) : null}
+              </span>
+              <span className="max-w-full text-center">{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
     </div>
   );
 }

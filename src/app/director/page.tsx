@@ -19,6 +19,10 @@ import { DirectorAttentionQueue } from "@/components/director-attention-queue";
 import { useShowPositions } from "@/components/position-store";
 import { createTemporaryHandoff } from "@/components/temporary-handoff-store";
 import {
+  assignIssueToTechnician,
+  useActiveIssueAssignments,
+} from "@/components/issue-assignment-store";
+import {
   getContinuitySessionPolicyMessage,
   setActiveContinuitySession,
   useActiveContinuitySession,
@@ -26,13 +30,10 @@ import {
 import {
   getTemporaryTechnicianLabel,
   setSelectedTemporaryTechnician,
-  setTemporaryTechnicianAssignment,
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
   useTemporaryAdditionalTechnicianAssignments,
   useTemporaryAdditionalTechnicianAssignmentTimes,
-  useTemporaryTechnicianAssignmentTimes,
-  useTemporaryTechnicianAssignments,
 } from "@/components/temporary-technician-store";
 import {
   getHistoryReadFailureMessage,
@@ -217,9 +218,15 @@ export default function DirectorConsolePage() {
   const activeSession = useActiveContinuitySession();
   const sessionForActiveShow =
     activeSession?.show_id === activeShow?.id ? activeSession : null;
-  const technicianAssignments = useTemporaryTechnicianAssignments();
-  const technicianAssignmentTimes =
-    useTemporaryTechnicianAssignmentTimes();
+  const {
+    assignmentsByIssue: technicianAssignments,
+    assignmentTimesByIssue: technicianAssignmentTimes,
+    error: assignmentLoadError,
+    refresh: refreshAssignments,
+  } = useActiveIssueAssignments(
+    activeShow?.id,
+    sessionForActiveShow?.id,
+  );
   const additionalAssignments =
     useTemporaryAdditionalTechnicianAssignments();
   const additionalAssignmentTimes =
@@ -468,6 +475,14 @@ export default function DirectorConsolePage() {
     void loadInitialIssues();
   }, [fetchIssues, refreshLatestNotes]);
 
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      void refreshIssues();
+    }, 5000);
+
+    return () => window.clearInterval(intervalId);
+  }, [refreshIssues]);
+
   const statusGroups = useMemo(() => {
     const groups = new Map<string, IssueRecord[]>();
 
@@ -661,7 +676,21 @@ export default function DirectorConsolePage() {
       return;
     }
 
-    setTemporaryTechnicianAssignment(issue.id, technicianId);
+    const { error: assignmentError } = await assignIssueToTechnician({
+      issueId: issue.id,
+      sessionId: issue.session_id ?? sessionForActiveShow?.id ?? null,
+      showId: activeShow.id,
+      technicianId,
+    });
+
+    if (assignmentError) {
+      setAssignmentFeedback({
+        type: "error",
+        message: `Issue status changed, but shared assignment failed: ${assignmentError.message}`,
+      });
+      setAssigningIssueId(null);
+      return;
+    }
 
     const { error: historyError } = await supabase
       .from("issue_status_history")
@@ -669,7 +698,7 @@ export default function DirectorConsolePage() {
         changed_by_user_id: null,
         issue_id: issue.id,
         new_status: "assigned",
-        note: `Assigned to ${getTemporaryTechnicianLabel(technicianId)} and placed In Queue (temporary MVP assignment).`,
+        note: `Assigned to ${getTemporaryTechnicianLabel(technicianId)} and placed In Queue.`,
         old_status: issue.status,
       });
 
@@ -682,7 +711,7 @@ export default function DirectorConsolePage() {
         ? getHistoryWriteFailureMessage(historyError.message)
         : null,
     );
-    await refreshIssues();
+    await Promise.all([refreshIssues(), refreshAssignments()]);
     setAssigningIssueId(null);
   };
 
@@ -734,7 +763,21 @@ export default function DirectorConsolePage() {
       });
     }
 
-    setTemporaryTechnicianAssignment(issue.id, technicianId);
+    const { error: assignmentError } = await assignIssueToTechnician({
+      issueId: issue.id,
+      sessionId: issue.session_id ?? sessionForActiveShow?.id ?? null,
+      showId: activeShow.id,
+      technicianId,
+    });
+
+    if (assignmentError) {
+      setAssignmentFeedback({
+        type: "error",
+        message: `Issue status changed, but shared reassignment failed: ${assignmentError.message}`,
+      });
+      setReassigningIssueId(null);
+      return;
+    }
 
     const originalLabel =
       getTemporaryTechnicianLabel(originalTechnician);
@@ -761,7 +804,7 @@ export default function DirectorConsolePage() {
         ? getHistoryWriteFailureMessage(historyError.message)
         : null,
     );
-    await refreshIssues();
+    await Promise.all([refreshIssues(), refreshAssignments()]);
     setReassigningIssueId(null);
   };
 
@@ -1586,6 +1629,12 @@ export default function DirectorConsolePage() {
               {assignmentWarning ? (
                 <p className="mt-2 text-xs font-semibold leading-5 text-[#fde68a]">
                   {assignmentWarning}
+                </p>
+              ) : null}
+              {assignmentLoadError ? (
+                <p className="mt-2 text-xs font-semibold leading-5 text-[#fecaca]">
+                  Shared assignments could not be loaded:{" "}
+                  {assignmentLoadError}
                 </p>
               ) : null}
             </div>

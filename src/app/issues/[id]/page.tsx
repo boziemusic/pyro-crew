@@ -15,12 +15,15 @@ import {
 } from "@/components/issue-identifiers";
 import {
   getTemporaryTechnicianLabel,
-  setTemporaryTechnicianAssignment,
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
   useTemporaryAdditionalTechnicianAssignments,
-  useTemporaryTechnicianAssignments,
 } from "@/components/temporary-technician-store";
+import {
+  assignIssueToTechnician,
+  clearActiveIssueAssignment,
+  useActiveIssueAssignments,
+} from "@/components/issue-assignment-store";
 import { getHistoryReadFailureMessage } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 
@@ -30,6 +33,8 @@ type IssueDetail = {
   cue_value: string;
   issue_type: string;
   status: string;
+  show_id: string;
+  session_id: string | null;
   position_name: string | null;
   effect_name: string | null;
   created_at: string | null;
@@ -77,18 +82,22 @@ export default function IssueDetailPage({
     useState<LatestHistoryNote | null>(null);
   const [timeline, setTimeline] = useState<IssueHistoryRecord[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const assignments = useTemporaryTechnicianAssignments();
   const additionalAssignments =
     useTemporaryAdditionalTechnicianAssignments();
   const assignmentSelectRef = useRef<HTMLSelectElement>(null);
-  const savedAssignment = assignments[id];
+  const {
+    assignmentsByIssue,
+    error: assignmentLoadError,
+    refresh: refreshAssignments,
+  } = useActiveIssueAssignments(issue?.show_id, issue?.session_id);
+  const savedAssignment = assignmentsByIssue[id];
   const additionalAssignment = additionalAssignments[id];
 
   const fetchIssue = useCallback(async () => {
     return supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, status, position_name, effect_name, created_at, updated_at",
+        "id, show_id, session_id, channel_number, cue_value, issue_type, status, position_name, effect_name, created_at, updated_at",
       )
       .eq("id", id)
       .maybeSingle();
@@ -139,18 +148,36 @@ export default function IssueDetailPage({
     void loadIssue();
   }, [fetchIssue, id, supabase]);
 
-  const handleSaveAssignment = () => {
+  const handleSaveAssignment = async () => {
+    if (!issue) {
+      return;
+    }
+
     const selectedValue = assignmentSelectRef.current?.value ?? "";
     const technicianId =
       selectedValue === ""
         ? null
         : (selectedValue as TemporaryTechnicianId);
 
-    setTemporaryTechnicianAssignment(id, technicianId);
+    const { error } = technicianId
+      ? await assignIssueToTechnician({
+          issueId: id,
+          sessionId: issue.session_id,
+          showId: issue.show_id,
+          technicianId,
+        })
+      : await clearActiveIssueAssignment(id);
+
+    if (error) {
+      setAssignmentMessage(`Could not save assignment: ${error.message}`);
+      return;
+    }
+
+    await refreshAssignments();
     setAssignmentMessage(
       technicianId
-        ? `Assignment saved locally: ${getTemporaryTechnicianLabel(technicianId)}.`
-        : "Temporary assignment cleared.",
+        ? `Shared assignment saved: ${getTemporaryTechnicianLabel(technicianId)}.`
+        : "Shared assignment cleared.",
     );
   };
 
@@ -195,8 +222,8 @@ export default function IssueDetailPage({
                   Assigned Technician
                 </h2>
                 <p className="text-sm leading-6 text-[#b6c3d1]">
-                  Temporary MVP assignment is stored only in this browser.
-                  The database assigned technician field is not changed.
+                  Technician ownership is shared through Supabase for this
+                  show and continuity session.
                 </p>
               </div>
 
@@ -219,7 +246,7 @@ export default function IssueDetailPage({
                 </label>
                 <button
                   type="button"
-                  onClick={handleSaveAssignment}
+                  onClick={() => void handleSaveAssignment()}
                   className="h-11 rounded-md bg-[#6d28d9] px-5 text-sm font-semibold text-white transition hover:bg-[#7c3aed] focus:outline-none focus:ring-2 focus:ring-[#a78bfa] focus:ring-offset-2 focus:ring-offset-[#0b1020]"
                 >
                   Save Assignment
@@ -232,10 +259,15 @@ export default function IssueDetailPage({
                 </p>
               ) : (
                 <p className="mt-3 text-xs text-[#94a3b8]">
-                  Current temporary assignment:{" "}
+                  Current shared assignment:{" "}
                   {getTemporaryTechnicianLabel(savedAssignment)}
                 </p>
               )}
+              {assignmentLoadError ? (
+                <p className="mt-2 text-xs font-semibold text-[#fecaca]">
+                  Could not load shared assignment: {assignmentLoadError}
+                </p>
+              ) : null}
             </section>
 
             <section className="rounded-lg border border-[#f59e0b]/30 bg-[#2a1c06]/55 p-5">
