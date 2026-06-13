@@ -11,9 +11,6 @@ import {
 } from "react";
 import {
   clearFieldMapImage,
-  placeFieldMapMarker,
-  placeFieldMapMarkers,
-  removeFieldMapMarkers,
   saveFieldMapImage,
   useFieldMap,
   type FieldMapMarker,
@@ -51,6 +48,13 @@ type SelectionBox = {
   start: MapPoint;
 };
 
+function markerTargetKey(
+  type: FieldMapMarker["entityType"],
+  name: string,
+) {
+  return `${type}:${name.trim().toLocaleLowerCase()}`;
+}
+
 export function PositionsMap({
   groups,
   isDirector,
@@ -79,6 +83,7 @@ export function PositionsMap({
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [isDraggingOverRemove, setIsDraggingOverRemove] = useState(false);
   const [isFileDragging, setIsFileDragging] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<{
     message: string;
     type: "error" | "success";
@@ -98,22 +103,27 @@ export function PositionsMap({
   ];
   const markerTargetLookup = new Map(
     markerTargets.map((target) => [
-      `${target.type}:${target.id}`,
+      markerTargetKey(target.type, target.label),
       target,
     ]),
   );
   const visibleMarkers = fieldMap.markers.filter((marker) =>
-    markerTargetLookup.has(`${marker.entityType}:${marker.entityId}`),
+    markerTargetLookup.has(
+      markerTargetKey(marker.entityType, marker.markerName),
+    ),
   );
   const visibleMarkerLookup = new Map(
     visibleMarkers.map((marker) => [
-      `${marker.entityType}:${marker.entityId}`,
+      markerTargetKey(marker.entityType, marker.markerName),
       marker,
     ]),
   );
   const placedMarkerKeys = new Set(visibleMarkerLookup.keys());
   const sortedGroups = groups
-    .filter((group) => !placedMarkerKeys.has(`group:${group.id}`))
+    .filter(
+      (group) =>
+        !placedMarkerKeys.has(markerTargetKey("group", group.name)),
+    )
     .sort((left, right) =>
       left.name.localeCompare(right.name, undefined, {
         numeric: true,
@@ -122,7 +132,10 @@ export function PositionsMap({
     );
   const sortedPositions = positions
     .filter(
-      (position) => !placedMarkerKeys.has(`position:${position.id}`),
+      (position) =>
+        !placedMarkerKeys.has(
+          markerTargetKey("position", position.name),
+        ),
     )
     .sort((left, right) =>
       left.name.localeCompare(right.name, undefined, {
@@ -134,6 +147,9 @@ export function PositionsMap({
     selectedMarkerKeys.filter((key) => placedMarkerKeys.has(key)),
   );
   const selectedTarget = markerTargetLookup.get(selectedTargetKey);
+  const displayedFeedback = fieldMap.error
+    ? { message: fieldMap.error, type: "error" as const }
+    : feedback;
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -197,52 +213,47 @@ export function PositionsMap({
     if (file.size > MAX_IMAGE_BYTES) {
       setFeedback({
         type: "error",
-        message: "Field map images must be 4 MB or smaller for local MVP storage.",
+        message: "Field map images must be 4 MB or smaller.",
       });
       return;
     }
 
-    const reader = new FileReader();
+    const imageUrl = URL.createObjectURL(file);
+    const image = new Image();
 
-    reader.onerror = () => {
+    image.onerror = () => {
+      URL.revokeObjectURL(imageUrl);
       setFeedback({
         type: "error",
-        message: "The field map image could not be read.",
+        message: "The selected file is not a valid field map image.",
       });
     };
-    reader.onload = () => {
-      const imageDataUrl =
-        typeof reader.result === "string" ? reader.result : "";
-      const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(imageUrl);
+      setIsSaving(true);
+      setFeedback(null);
 
-      image.onerror = () => {
-        setFeedback({
-          type: "error",
-          message: "The selected file is not a valid field map image.",
-        });
-      };
-      image.onload = () => {
-        try {
-          saveFieldMapImage(showId, {
-            imageAspectRatio: image.naturalWidth / image.naturalHeight,
-            imageDataUrl,
-            imageName: file.name,
-          });
+      void saveFieldMapImage(showId, file)
+        .then(({ warning }) => {
           setFeedback({
-            type: "success",
-            message: "Field map image saved locally for this show.",
+            type: warning ? "error" : "success",
+            message:
+              warning ??
+              "Field map image uploaded and shared for this show.",
           });
-        } catch {
+        })
+        .catch((error) => {
           setFeedback({
             type: "error",
             message:
-              "The image could not be stored locally. Try a smaller field map image.",
+              error instanceof Error
+                ? error.message
+                : "The field map image could not be uploaded.",
           });
-        }
-      };
-      image.src = imageDataUrl;
+        })
+        .finally(() => setIsSaving(false));
     };
-    reader.readAsDataURL(file);
+    image.src = imageUrl;
   };
 
   const handleImageUpload = (event: ChangeEvent<HTMLInputElement>) => {
@@ -309,7 +320,7 @@ export function PositionsMap({
   };
 
   const handleMapClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (!isDirector || !selectedTarget || draggingMarkers) {
+    if (!isDirector || !selectedTarget || draggingMarkers || isSaving) {
       return;
     }
 
@@ -319,17 +330,32 @@ export function PositionsMap({
       return;
     }
 
-    placeFieldMapMarker(showId, {
-      entityId: selectedTarget.id,
+    const marker = {
       entityType: selectedTarget.type,
+      markerName: selectedTarget.label,
       ...point,
-    });
-    setFeedback({
-      type: "success",
-      message: `${selectedTarget.label} placed on the field map.`,
-    });
+    };
+
+    setIsSaving(true);
     setSelectedTargetKey("");
     setPlacementPreview(null);
+    void fieldMap.placeMarkersOptimistically([marker])
+      .then(() => {
+        setFeedback({
+          type: "success",
+          message: `${selectedTarget.label} placed on the field map.`,
+        });
+      })
+      .catch((error) => {
+        setFeedback({
+          type: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : `${selectedTarget.label} could not be placed.`,
+        });
+      })
+      .finally(() => setIsSaving(false));
   };
 
   const handleMapPointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -414,7 +440,8 @@ export function PositionsMap({
                 marker.y <= bottom,
             )
             .map(
-              (marker) => `${marker.entityType}:${marker.entityId}`,
+              (marker) =>
+                markerTargetKey(marker.entityType, marker.markerName),
             )
         : [],
     );
@@ -436,7 +463,10 @@ export function PositionsMap({
     setIsDraggingOverRemove(false);
     setSelectedTargetKey("");
     setPlacementPreview(null);
-    const markerKey = `${marker.entityType}:${marker.entityId}`;
+    const markerKey = markerTargetKey(
+      marker.entityType,
+      marker.markerName,
+    );
     const dragKeys = selectedMarkerKeySet.has(markerKey)
       ? Array.from(selectedMarkerKeySet)
       : [markerKey];
@@ -555,35 +585,48 @@ export function PositionsMap({
       return;
     }
 
-    if (shouldRemove) {
-      removeFieldMapMarkers(showId, draggingMarkers.keys);
-      setFeedback({
-        type: "success",
-        message: `${draggingMarkers.keys.length} marker${
-          draggingMarkers.keys.length === 1 ? "" : "s"
-        } removed from the field map.`,
-      });
-      setSelectedMarkerKeys([]);
-    } else {
-      placeFieldMapMarkers(
-        showId,
-        draggingMarkers.keys.flatMap((key) => {
-          const marker = visibleMarkerLookup.get(key);
-          const point = draggingMarkers.points[key];
+    const affectedMarkers = draggingMarkers.keys.flatMap((key) => {
+      const marker = visibleMarkerLookup.get(key);
+      const point = draggingMarkers.points[key];
 
-          return marker && point ? [{ ...marker, ...point }] : [];
-        }),
-      );
-      setFeedback({
-        type: "success",
-        message: `${draggingMarkers.keys.length} marker${
-          draggingMarkers.keys.length === 1 ? "" : "s"
-        } position updated.`,
-      });
-    }
+      return marker && point ? [{ ...marker, ...point }] : [];
+    });
+    const affectedCount = affectedMarkers.length;
 
+    const operation = shouldRemove
+      ? fieldMap.removeMarkersOptimistically(affectedMarkers)
+      : fieldMap.placeMarkersOptimistically(affectedMarkers);
+
+    setIsSaving(true);
     setDraggingMarkers(null);
     setIsDraggingOverRemove(false);
+    void operation
+      .then(() => {
+        setFeedback({
+          type: "success",
+          message: shouldRemove
+            ? `${affectedCount} marker${
+                affectedCount === 1 ? "" : "s"
+              } removed from the field map.`
+            : `${affectedCount} marker${
+                affectedCount === 1 ? "" : "s"
+              } position updated.`,
+        });
+
+        if (shouldRemove) {
+          setSelectedMarkerKeys([]);
+        }
+      })
+      .catch((error) => {
+        setFeedback({
+          type: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "The marker change could not be saved.",
+        });
+      })
+      .finally(() => setIsSaving(false));
   };
 
   const cancelPlacement = () => {
@@ -623,12 +666,17 @@ export function PositionsMap({
           />
           <button
             className="rounded-md bg-[#6d28d9] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#7c3aed]"
+            disabled={isSaving}
             onClick={() => fileInputRef.current?.click()}
             type="button"
           >
-            {fieldMap.imageDataUrl ? "Replace Field Map" : "Upload Field Map"}
+            {isSaving
+              ? "Saving..."
+              : fieldMap.imageUrl
+                ? "Replace Field Map"
+                : "Upload Field Map"}
           </button>
-          {fieldMap.imageDataUrl ? (
+          {fieldMap.imageUrl ? (
             <>
               <select
                 className="h-10 min-w-52 rounded-md border border-white/15 bg-[#070b18] px-3 text-sm font-semibold text-white outline-none focus:border-[#a78bfa]"
@@ -643,7 +691,10 @@ export function PositionsMap({
                 {sortedGroups.length > 0 ? (
                   <optgroup label="Position Groups">
                     {sortedGroups.map((group) => (
-                      <option key={group.id} value={`group:${group.id}`}>
+                      <option
+                        key={group.id}
+                        value={markerTargetKey("group", group.name)}
+                      >
                         {group.name}
                       </option>
                     ))}
@@ -654,7 +705,10 @@ export function PositionsMap({
                     {sortedPositions.map((position) => (
                       <option
                         key={position.id}
-                        value={`position:${position.id}`}
+                        value={markerTargetKey(
+                          "position",
+                          position.name,
+                        )}
                       >
                         {position.name}
                       </option>
@@ -673,20 +727,36 @@ export function PositionsMap({
               ) : null}
               <button
                 className="rounded-md border border-[#ef4444]/35 px-4 py-2 text-sm font-semibold text-[#fecaca] transition hover:border-[#ef4444]/65"
+                disabled={isSaving}
                 onClick={() => {
                   if (
                     window.confirm(
                       "Remove the uploaded field map image? Marker placements, position groups, and positions will be kept.",
                     )
                   ) {
-                    clearFieldMapImage(showId);
-                    cancelPlacement();
-                    setSelectedMarkerKeys([]);
-                    setFeedback({
-                      type: "success",
-                      message:
-                        "Field map image cleared. Marker placements and position data were kept.",
-                    });
+                    setIsSaving(true);
+                    setFeedback(null);
+                    void clearFieldMapImage(showId)
+                      .then(({ warning }) => {
+                        cancelPlacement();
+                        setSelectedMarkerKeys([]);
+                        setFeedback({
+                          type: warning ? "error" : "success",
+                          message:
+                            warning ??
+                            "Field map image cleared. Marker placements and position data were kept.",
+                        });
+                      })
+                      .catch((error) => {
+                        setFeedback({
+                          type: "error",
+                          message:
+                            error instanceof Error
+                              ? error.message
+                              : "The field map image could not be cleared.",
+                        });
+                      })
+                      .finally(() => setIsSaving(false));
                   }
                 }}
                 type="button"
@@ -698,17 +768,21 @@ export function PositionsMap({
         </div>
       ) : null}
 
-      {feedback ? (
+      {displayedFeedback ? (
         <div
-          aria-live={feedback.type === "error" ? "assertive" : "polite"}
+          aria-live={
+            displayedFeedback.type === "error" ? "assertive" : "polite"
+          }
           className={`pointer-events-none fixed bottom-5 right-5 z-50 max-w-sm rounded-md border px-4 py-3 text-sm font-semibold shadow-2xl shadow-black/40 ${
-            feedback.type === "success"
+            displayedFeedback.type === "success"
               ? "border-[#22c55e]/35 bg-[#082515] text-[#bbf7d0]"
               : "border-[#ef4444]/40 bg-[#2a0b13] text-[#fecaca]"
           }`}
-          role={feedback.type === "error" ? "alert" : "status"}
+          role={
+            displayedFeedback.type === "error" ? "alert" : "status"
+          }
         >
-          {feedback.message}
+          {displayedFeedback.message}
         </div>
       ) : null}
 
@@ -731,7 +805,7 @@ export function PositionsMap({
           </div>
         ) : null}
 
-        {fieldMap.imageDataUrl ? (
+        {fieldMap.imageUrl ? (
           <>
             <div
               aria-label="Uploaded field map"
@@ -756,11 +830,14 @@ export function PositionsMap({
               role="img"
               style={{
                 aspectRatio: fieldMap.imageAspectRatio,
-                backgroundImage: `url("${fieldMap.imageDataUrl}")`,
+                backgroundImage: `url("${fieldMap.imageUrl}")`,
               }}
             >
               {visibleMarkers.map((marker) => {
-                const key = `${marker.entityType}:${marker.entityId}`;
+                const key = markerTargetKey(
+                  marker.entityType,
+                  marker.markerName,
+                );
                 const target = markerTargetLookup.get(key);
                 const isDragging = Boolean(draggingMarkers?.points[key]);
                 const isSelected = selectedMarkerKeySet.has(key);
@@ -903,16 +980,36 @@ export function PositionsMap({
                   </span>
                   <button
                     className="font-semibold text-[#fca5a5] hover:text-[#fecaca]"
+                    disabled={isSaving}
                     onClick={() => {
                       const keys = Array.from(selectedMarkerKeySet);
-                      removeFieldMapMarkers(showId, keys);
-                      setSelectedMarkerKeys([]);
-                      setFeedback({
-                        type: "success",
-                        message: `${keys.length} marker${
-                          keys.length === 1 ? "" : "s"
-                        } removed from the field map.`,
+                      const markers = keys.flatMap((key) => {
+                        const marker = visibleMarkerLookup.get(key);
+                        return marker ? [marker] : [];
                       });
+
+                      setIsSaving(true);
+                      void fieldMap
+                        .removeMarkersOptimistically(markers)
+                        .then(() => {
+                          setSelectedMarkerKeys([]);
+                          setFeedback({
+                            type: "success",
+                            message: `${markers.length} marker${
+                              markers.length === 1 ? "" : "s"
+                            } removed from the field map.`,
+                          });
+                        })
+                        .catch((error) => {
+                          setFeedback({
+                            type: "error",
+                            message:
+                              error instanceof Error
+                                ? error.message
+                                : "The selected markers could not be removed.",
+                          });
+                        })
+                        .finally(() => setIsSaving(false));
                     }}
                     type="button"
                   >
@@ -940,7 +1037,9 @@ export function PositionsMap({
             <span>
               <span className="block font-semibold text-[#dbe4ef]">
                 {isDirector
-                  ? "Drop a field map image here or click to upload"
+                  ? fieldMap.isLoading
+                    ? "Loading shared field map..."
+                    : "Drop a field map image here or click to upload"
                   : "No field map has been uploaded for this show"}
               </span>
               <span className="mt-2 block text-sm text-[#94a3b8]">

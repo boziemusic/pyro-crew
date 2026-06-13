@@ -10,6 +10,7 @@ import { ISSUE_IDENTIFIER_VALUE_CLASS_NAME } from "./issue-identifiers";
 export type ActiveShow = {
   id: string;
   name: string;
+  show_code?: string | null;
   show_mode: "scripted" | "manual";
   firing_system?: string | null;
   script_adapter?: string | null;
@@ -72,6 +73,21 @@ export function getServerActiveShowSnapshot() {
   return null;
 }
 
+export function setActiveShow(show: ActiveShow | null) {
+  if (show) {
+    const serialized = JSON.stringify(show);
+    window.localStorage.setItem(ACTIVE_SHOW_STORAGE_KEY, serialized);
+    cachedStorageValue = serialized;
+    cachedActiveShow = show;
+  } else {
+    window.localStorage.removeItem(ACTIVE_SHOW_STORAGE_KEY);
+    cachedStorageValue = null;
+    cachedActiveShow = null;
+  }
+
+  window.dispatchEvent(new Event(ACTIVE_SHOW_EVENT));
+}
+
 export function useActiveShow() {
   return useSyncExternalStore(
     subscribeToActiveShowStore,
@@ -93,10 +109,7 @@ export function ActiveShowStrip() {
     : ACTIVE_SHOW_NEUTRAL_SECONDARY_TEXT;
   const clearActiveShow = () => {
     setActiveContinuitySession(null);
-    window.localStorage.removeItem(ACTIVE_SHOW_STORAGE_KEY);
-    cachedStorageValue = null;
-    cachedActiveShow = null;
-    window.dispatchEvent(new Event(ACTIVE_SHOW_EVENT));
+    setActiveShow(null);
   };
 
   return (
@@ -122,7 +135,7 @@ export function ActiveShowStrip() {
           </p>
           {activeShow ? (
             <button
-              className="text-xs font-semibold text-[#94a3b8] underline decoration-white/20 underline-offset-4 transition hover:text-white"
+              className="min-h-11 touch-manipulation px-2 text-xs font-semibold text-[#94a3b8] underline decoration-white/20 underline-offset-4 transition hover:text-white active:text-white"
               onClick={clearActiveShow}
               type="button"
             >

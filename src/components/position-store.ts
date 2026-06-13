@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { notifyFieldMapChanged } from "@/components/field-map-store";
+import { createSupabaseBrowserClient } from "@/lib/supabase";
 
 export type PositionGroup = {
   id: string;
@@ -13,7 +15,7 @@ export type FieldPosition = {
   groupId: string | null;
   name: string;
   createdAt: string;
-  source?: "manual" | "script";
+  source: "manual" | "script_imported";
 };
 
 export type PositionImportSummary = {
@@ -24,283 +26,509 @@ export type PositionImportSummary = {
 };
 
 type ShowPositionData = {
+  error: string | null;
   groups: PositionGroup[];
+  isLoading: boolean;
   positions: FieldPosition[];
 };
 
-type PositionStore = Record<string, ShowPositionData>;
+type PositionGroupRow = {
+  created_at: string;
+  id: string;
+  name: string;
+};
 
-const STORAGE_KEY = "pyro-crew-show-positions";
+type PositionRow = {
+  created_at: string;
+  group_id: string | null;
+  id: string;
+  name: string;
+  source: string;
+};
+
+const LEGACY_STORAGE_KEY = "pyro-crew-show-positions";
 const STORE_EVENT = "pyro-crew-show-positions-change";
 const EMPTY_SHOW_DATA: ShowPositionData = {
+  error: null,
   groups: [],
+  isLoading: false,
   positions: [],
 };
 
-let cachedStorageValue: string | null = null;
-let cachedStore: PositionStore = {};
-
-function createId() {
-  return typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+function normalizeName(name: string) {
+  return name.trim().toLocaleLowerCase();
 }
 
-function readStoreSnapshot() {
-  if (typeof window === "undefined") {
-    return cachedStore;
-  }
-
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-
-  if (!stored) {
-    cachedStorageValue = null;
-    cachedStore = {};
-    return cachedStore;
-  }
-
-  if (stored === cachedStorageValue) {
-    return cachedStore;
-  }
-
-  try {
-    cachedStorageValue = stored;
-    cachedStore = JSON.parse(stored) as PositionStore;
-    return cachedStore;
-  } catch {
-    window.localStorage.removeItem(STORAGE_KEY);
-    cachedStorageValue = null;
-    cachedStore = {};
-    return cachedStore;
-  }
+function notifyPositionStoreChanged(showId: string) {
+  window.dispatchEvent(
+    new CustomEvent(STORE_EVENT, { detail: { showId } }),
+  );
 }
 
-function subscribeToPositionStore(onStoreChange: () => void) {
-  window.addEventListener("storage", onStoreChange);
-  window.addEventListener(STORE_EVENT, onStoreChange);
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
 
-  return () => {
-    window.removeEventListener("storage", onStoreChange);
-    window.removeEventListener(STORE_EVENT, onStoreChange);
+async function renameFieldMapMarker(
+  showId: string,
+  markerType: "group" | "position",
+  previousName: string,
+  nextName: string,
+) {
+  const supabase = createSupabaseBrowserClient();
+  const markerResult = await supabase
+    .from("field_map_markers")
+    .select("id, marker_name")
+    .eq("show_id", showId)
+    .eq("marker_type", markerType);
+
+  if (markerResult.error) {
+    throw new Error(
+      `The ${markerType} was renamed, but its map marker could not be checked: ${markerResult.error.message}`,
+    );
+  }
+
+  const markerIds = (markerResult.data ?? [])
+    .filter(
+      (marker) =>
+        normalizeName(marker.marker_name) === normalizeName(previousName),
+    )
+    .map((marker) => marker.id);
+
+  if (markerIds.length === 0) {
+    return;
+  }
+
+  const updateResult = await supabase
+    .from("field_map_markers")
+    .update({
+      marker_name: nextName.trim(),
+      updated_at: new Date().toISOString(),
+    })
+    .in("id", markerIds);
+
+  if (updateResult.error) {
+    throw new Error(
+      `The ${markerType} was renamed, but its map marker could not be updated: ${updateResult.error.message}`,
+    );
+  }
+
+  notifyFieldMapChanged(showId);
+}
+
+async function loadShowPositions(
+  showId: string,
+): Promise<ShowPositionData> {
+  const supabase = createSupabaseBrowserClient();
+  const [groupResult, positionResult] = await Promise.all([
+    supabase
+      .from("position_groups")
+      .select("id, name, created_at")
+      .eq("show_id", showId)
+      .order("name", { ascending: true }),
+    supabase
+      .from("positions")
+      .select("id, group_id, name, source, created_at")
+      .eq("show_id", showId)
+      .order("name", { ascending: true }),
+  ]);
+
+  if (groupResult.error) {
+    throw new Error(
+      `Position groups could not be loaded: ${groupResult.error.message}`,
+    );
+  }
+
+  if (positionResult.error) {
+    throw new Error(
+      `Positions could not be loaded: ${positionResult.error.message}`,
+    );
+  }
+
+  return {
+    error: null,
+    groups: ((groupResult.data ?? []) as PositionGroupRow[]).map(
+      (group) => ({
+        createdAt: group.created_at,
+        id: group.id,
+        name: group.name,
+      }),
+    ),
+    isLoading: false,
+    positions: ((positionResult.data ?? []) as PositionRow[]).map(
+      (position) => ({
+        createdAt: position.created_at,
+        groupId: position.group_id,
+        id: position.id,
+        name: position.name,
+        source:
+          position.source === "script_imported"
+            ? "script_imported"
+            : "manual",
+      }),
+    ),
   };
-}
-
-function writeShowData(showId: string, showData: ShowPositionData) {
-  const nextStore = {
-    ...readStoreSnapshot(),
-    [showId]: showData,
-  };
-  const serialized = JSON.stringify(nextStore);
-
-  window.localStorage.setItem(STORAGE_KEY, serialized);
-  cachedStorageValue = serialized;
-  cachedStore = nextStore;
-  window.dispatchEvent(new Event(STORE_EVENT));
 }
 
 export function useShowPositions(showId: string | undefined) {
-  const getSnapshot = useCallback(
-    () =>
-      showId
-        ? readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA
-        : EMPTY_SHOW_DATA,
-    [showId],
-  );
+  const [showData, setShowData] =
+    useState<ShowPositionData>(EMPTY_SHOW_DATA);
+  const requestIdRef = useRef(0);
 
-  return useSyncExternalStore(
-    subscribeToPositionStore,
-    getSnapshot,
-    () => EMPTY_SHOW_DATA,
-  );
+  const refresh = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+
+    if (!showId) {
+      setShowData(EMPTY_SHOW_DATA);
+      return;
+    }
+
+    setShowData((current) => ({
+      ...current,
+      error: null,
+      isLoading: true,
+    }));
+
+    try {
+      const nextShowData = await loadShowPositions(showId);
+
+      if (requestId === requestIdRef.current) {
+        setShowData(nextShowData);
+      }
+    } catch (error) {
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
+
+      setShowData((current) => ({
+        ...current,
+        error: getErrorMessage(
+          error,
+          "Position data could not be loaded.",
+        ),
+        isLoading: false,
+      }));
+    }
+  }, [showId]);
+
+  useEffect(() => {
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!showId) {
+      return;
+    }
+
+    const handleStoreChange = (event: Event) => {
+      const changedShowId = (event as CustomEvent<{ showId?: string }>).detail
+        ?.showId;
+
+      if (!changedShowId || changedShowId === showId) {
+        void refresh();
+      }
+    };
+
+    window.addEventListener(STORE_EVENT, handleStoreChange);
+    return () => window.removeEventListener(STORE_EVENT, handleStoreChange);
+  }, [refresh, showId]);
+
+  return showData;
 }
 
-export function createPositionGroup(showId: string, name: string) {
-  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
-  const group: PositionGroup = {
-    id: createId(),
+export async function createPositionGroup(
+  showId: string,
+  name: string,
+) {
+  const supabase = createSupabaseBrowserClient();
+  const result = await supabase.from("position_groups").insert({
     name: name.trim(),
-    createdAt: new Date().toISOString(),
-  };
-
-  writeShowData(showId, {
-    ...current,
-    groups: [...current.groups, group],
+    show_id: showId,
   });
+
+  if (result.error) {
+    throw new Error(
+      `Position group could not be created: ${result.error.message}`,
+    );
+  }
+
+  notifyPositionStoreChanged(showId);
 }
 
-export function renamePositionGroup(
+export async function renamePositionGroup(
   showId: string,
   groupId: string,
   name: string,
 ) {
-  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
+  const supabase = createSupabaseBrowserClient();
+  const currentResult = await supabase
+    .from("position_groups")
+    .select("name")
+    .eq("id", groupId)
+    .eq("show_id", showId)
+    .single();
 
-  writeShowData(showId, {
-    ...current,
-    groups: current.groups.map((group) =>
-      group.id === groupId ? { ...group, name: name.trim() } : group,
-    ),
-  });
+  if (currentResult.error) {
+    throw new Error(
+      `Position group could not be loaded for renaming: ${currentResult.error.message}`,
+    );
+  }
+
+  const trimmedName = name.trim();
+  const result = await supabase
+    .from("position_groups")
+    .update({
+      name: trimmedName,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", groupId)
+    .eq("show_id", showId);
+
+  if (result.error) {
+    throw new Error(
+      `Position group could not be renamed: ${result.error.message}`,
+    );
+  }
+
+  try {
+    await renameFieldMapMarker(
+      showId,
+      "group",
+      currentResult.data.name,
+      trimmedName,
+    );
+  } finally {
+    notifyPositionStoreChanged(showId);
+  }
 }
 
-export function deletePositionGroup(showId: string, groupId: string) {
-  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
+export async function deletePositionGroup(
+  showId: string,
+  groupId: string,
+) {
+  const supabase = createSupabaseBrowserClient();
+  const result = await supabase
+    .from("position_groups")
+    .delete()
+    .eq("id", groupId)
+    .eq("show_id", showId);
 
-  writeShowData(showId, {
-    groups: current.groups.filter((group) => group.id !== groupId),
-    positions: current.positions.map((position) =>
-      position.groupId === groupId
-        ? { ...position, groupId: null }
-        : position,
-    ),
-  });
+  if (result.error) {
+    throw new Error(
+      `Position group could not be deleted: ${result.error.message}`,
+    );
+  }
+
+  notifyPositionStoreChanged(showId);
 }
 
-export function createFieldPosition(
+export async function createFieldPosition(
   showId: string,
   groupId: string | null,
   name: string,
 ) {
-  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
-  const position: FieldPosition = {
-    id: createId(),
-    groupId,
+  const supabase = createSupabaseBrowserClient();
+  const result = await supabase.from("positions").insert({
+    group_id: groupId,
     name: name.trim(),
-    createdAt: new Date().toISOString(),
+    show_id: showId,
     source: "manual",
-  };
-
-  writeShowData(showId, {
-    ...current,
-    positions: [...current.positions, position],
   });
+
+  if (result.error) {
+    throw new Error(
+      `Field position could not be created: ${result.error.message}`,
+    );
+  }
+
+  notifyPositionStoreChanged(showId);
 }
 
-export function syncScriptPositions(
+export async function syncScriptPositions(
   showId: string,
   positionNames: string[],
-): PositionImportSummary {
-  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
+): Promise<PositionImportSummary> {
+  const supabase = createSupabaseBrowserClient();
   const uniquePositions = new Map<string, string>();
 
   positionNames.forEach((name) => {
     const trimmedName = name.trim();
 
     if (trimmedName) {
-      uniquePositions.set(trimmedName.toLocaleLowerCase(), trimmedName);
+      uniquePositions.set(normalizeName(trimmedName), trimmedName);
     }
   });
 
-  const existingNames = new Set(
-    current.positions.map((position) =>
-      position.name.trim().toLocaleLowerCase(),
-    ),
-  );
-  const importedAt = new Date().toISOString();
-  const newPositions = Array.from(uniquePositions.entries())
-    .filter(([normalizedName]) => !existingNames.has(normalizedName))
-    .map<FieldPosition>(([, name]) => ({
-      id: createId(),
-      groupId: null,
-      name,
-      createdAt: importedAt,
-      source: "script",
-    }));
-  const retainedPositions = current.positions.filter(
-    (position) =>
-      position.source !== "script" ||
-      uniquePositions.has(position.name.trim().toLocaleLowerCase()),
-  );
-  const stalePositionsRemoved =
-    current.positions.length - retainedPositions.length;
+  const existingResult = await supabase
+    .from("positions")
+    .select("id, name, source")
+    .eq("show_id", showId);
 
-  if (newPositions.length > 0 || stalePositionsRemoved > 0) {
-    writeShowData(showId, {
-      ...current,
-      positions: [...retainedPositions, ...newPositions],
-    });
+  if (existingResult.error) {
+    throw new Error(
+      `Existing positions could not be loaded for script import: ${existingResult.error.message}`,
+    );
+  }
+
+  const existingPositions = existingResult.data ?? [];
+  const existingNames = new Set(
+    existingPositions.map((position) => normalizeName(position.name)),
+  );
+  const inserts = Array.from(uniquePositions.entries())
+    .filter(([name]) => !existingNames.has(name))
+    .map(([, name]) => ({
+      group_id: null,
+      name,
+      show_id: showId,
+      source: "script_imported",
+    }));
+  const staleIds = existingPositions
+    .filter(
+      (position) =>
+        position.source === "script_imported" &&
+        !uniquePositions.has(normalizeName(position.name)),
+    )
+    .map((position) => position.id);
+
+  if (inserts.length > 0) {
+    const insertResult = await supabase.from("positions").insert(inserts);
+
+    if (insertResult.error) {
+      throw new Error(
+        `Script positions could not be imported: ${insertResult.error.message}`,
+      );
+    }
+  }
+
+  if (staleIds.length > 0) {
+    const deleteResult = await supabase
+      .from("positions")
+      .delete()
+      .eq("show_id", showId)
+      .in("id", staleIds);
+
+    if (deleteResult.error) {
+      notifyPositionStoreChanged(showId);
+      throw new Error(
+        `New script positions were imported, but stale positions could not be removed: ${deleteResult.error.message}`,
+      );
+    }
+  }
+
+  if (inserts.length > 0 || staleIds.length > 0) {
+    notifyPositionStoreChanged(showId);
   }
 
   return {
+    duplicatesSkipped: uniquePositions.size - inserts.length,
     positionsFound: uniquePositions.size,
-    positionsImported: newPositions.length,
-    duplicatesSkipped: uniquePositions.size - newPositions.length,
-    stalePositionsRemoved,
+    positionsImported: inserts.length,
+    stalePositionsRemoved: staleIds.length,
   };
 }
 
-export function moveFieldPosition(
+export async function moveFieldPosition(
   showId: string,
   positionId: string,
   groupId: string | null,
 ) {
-  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
-
-  writeShowData(showId, {
-    ...current,
-    positions: current.positions.map((position) =>
-      position.id === positionId ? { ...position, groupId } : position,
-    ),
-  });
+  return moveFieldPositions(showId, [positionId], groupId);
 }
 
-export function moveFieldPositions(
+export async function moveFieldPositions(
   showId: string,
   positionIds: string[],
   groupId: string | null,
 ) {
-  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
-  const selectedIds = new Set(positionIds);
-
-  if (selectedIds.size === 0) {
+  if (positionIds.length === 0) {
     return;
   }
 
-  writeShowData(showId, {
-    ...current,
-    positions: current.positions.map((position) =>
-      selectedIds.has(position.id) ? { ...position, groupId } : position,
-    ),
-  });
+  const supabase = createSupabaseBrowserClient();
+  const result = await supabase
+    .from("positions")
+    .update({
+      group_id: groupId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("show_id", showId)
+    .in("id", positionIds);
+
+  if (result.error) {
+    throw new Error(
+      `Position assignment could not be updated: ${result.error.message}`,
+    );
+  }
+
+  notifyPositionStoreChanged(showId);
 }
 
-export function renameFieldPosition(
+export async function renameFieldPosition(
   showId: string,
   positionId: string,
   name: string,
 ) {
-  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
+  const supabase = createSupabaseBrowserClient();
+  const currentResult = await supabase
+    .from("positions")
+    .select("name")
+    .eq("id", positionId)
+    .eq("show_id", showId)
+    .single();
 
-  writeShowData(showId, {
-    ...current,
-    positions: current.positions.map((position) =>
-      position.id === positionId
-        ? { ...position, name: name.trim() }
-        : position,
-    ),
-  });
+  if (currentResult.error) {
+    throw new Error(
+      `Position could not be loaded for renaming: ${currentResult.error.message}`,
+    );
+  }
+
+  const trimmedName = name.trim();
+  const result = await supabase
+    .from("positions")
+    .update({
+      name: trimmedName,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", positionId)
+    .eq("show_id", showId);
+
+  if (result.error) {
+    throw new Error(
+      `Position could not be renamed: ${result.error.message}`,
+    );
+  }
+
+  try {
+    await renameFieldMapMarker(
+      showId,
+      "position",
+      currentResult.data.name,
+      trimmedName,
+    );
+  } finally {
+    notifyPositionStoreChanged(showId);
+  }
 }
 
-export function deleteFieldPosition(showId: string, positionId: string) {
-  const current = readStoreSnapshot()[showId] ?? EMPTY_SHOW_DATA;
+export async function deleteFieldPosition(
+  showId: string,
+  positionId: string,
+) {
+  const supabase = createSupabaseBrowserClient();
+  const result = await supabase
+    .from("positions")
+    .delete()
+    .eq("id", positionId)
+    .eq("show_id", showId);
 
-  writeShowData(showId, {
-    ...current,
-    positions: current.positions.filter(
-      (position) => position.id !== positionId,
-    ),
-  });
-}
+  if (result.error) {
+    throw new Error(
+      `Position could not be deleted: ${result.error.message}`,
+    );
+  }
 
-export function deleteShowPositionData(showId: string) {
-  const nextStore = { ...readStoreSnapshot() };
-  delete nextStore[showId];
-  const serialized = JSON.stringify(nextStore);
-
-  window.localStorage.setItem(STORAGE_KEY, serialized);
-  cachedStorageValue = serialized;
-  cachedStore = nextStore;
-  window.dispatchEvent(new Event(STORE_EVENT));
+  notifyPositionStoreChanged(showId);
 }
 
 // TODO(field zones): support team and technician assignment by field zone.

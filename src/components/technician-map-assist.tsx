@@ -24,7 +24,8 @@ export function TechnicianMapAssist({
     ? fieldMap.markers.find(
         (marker) =>
           marker.entityType === "position" &&
-          marker.entityId === position.id,
+          marker.markerName.trim().toLocaleLowerCase() ===
+            position.name.trim().toLocaleLowerCase(),
       )
     : null;
   const group = position?.groupId
@@ -41,22 +42,19 @@ export function TechnicianMapAssist({
       ? fieldMap.markers.find(
           (marker) =>
             marker.entityType === "group" &&
-            marker.entityId === group.id,
+            marker.markerName.trim().toLocaleLowerCase() ===
+              group.name.trim().toLocaleLowerCase(),
         )
       : null;
   const targetMarker = directMarker ?? groupMarker ?? null;
-  const markerLabels = new Map<string, string>([
+  const markerNames = new Set([
     ...showPositions.groups.map(
-      (candidate): [string, string] => [
-        `group:${candidate.id}`,
-        candidate.name,
-      ],
+      (candidate) =>
+        `group:${candidate.name.trim().toLocaleLowerCase()}`,
     ),
     ...showPositions.positions.map(
-      (candidate): [string, string] => [
-        `position:${candidate.id}`,
-        candidate.name,
-      ],
+      (candidate) =>
+        `position:${candidate.name.trim().toLocaleLowerCase()}`,
     ),
   ]);
 
@@ -113,10 +111,18 @@ export function TechnicianMapAssist({
         </header>
 
         <div className="min-h-0 overflow-auto p-3 sm:p-5">
-          {!fieldMap.imageDataUrl ? (
+          {fieldMap.error ? (
+            <div className="flex min-h-72 items-center justify-center rounded-lg border border-[#ef4444]/35 bg-[#2a0b13] px-6 text-center">
+              <p className="font-semibold text-[#fecaca]">
+                {fieldMap.error}
+              </p>
+            </div>
+          ) : !fieldMap.imageUrl ? (
             <div className="flex min-h-72 items-center justify-center rounded-lg border border-dashed border-white/15 bg-[#070b18] px-6 text-center">
               <p className="font-semibold text-[#cbd5e1]">
-                No field map has been configured for this show.
+                {fieldMap.isLoading
+                  ? "Loading shared field map..."
+                  : "No field map has been configured for this show."}
               </p>
             </div>
           ) : (
@@ -127,14 +133,16 @@ export function TechnicianMapAssist({
                 role="img"
                 style={{
                   aspectRatio: fieldMap.imageAspectRatio,
-                  backgroundImage: `url("${fieldMap.imageDataUrl}")`,
+                  backgroundImage: `url("${fieldMap.imageUrl}")`,
                 }}
               >
                 {fieldMap.markers.map((marker) => {
-                  const markerKey = `${marker.entityType}:${marker.entityId}`;
-                  const label = markerLabels.get(markerKey);
+                  const label = marker.markerName;
+                  const markerKey = `${marker.entityType}:${marker.markerName
+                    .trim()
+                    .toLocaleLowerCase()}`;
 
-                  if (!label) {
+                  if (!markerNames.has(markerKey)) {
                     return null;
                   }
 

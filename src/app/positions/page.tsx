@@ -43,6 +43,10 @@ type ImportResult = {
   summary: PositionImportSummary;
 };
 
+function getMutationError(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
 export default function PositionsPage() {
   const activeShow = useActiveShow();
   const showData = useShowPositions(activeShow?.id);
@@ -76,6 +80,7 @@ export default function PositionsPage() {
       showId: null,
     });
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [isMutating, setIsMutating] = useState(false);
 
   useEffect(() => {
     if (!activeShow?.id) {
@@ -117,7 +122,27 @@ export default function PositionsPage() {
       });
 
       const names = Array.from(uniqueNames.values());
-      const summary = syncScriptPositions(activeShow.id, names);
+      let summary: PositionImportSummary;
+
+      try {
+        summary = await syncScriptPositions(activeShow.id, names);
+      } catch (syncError) {
+        if (isCurrent) {
+          setScriptPositionState({
+            error: getMutationError(
+              syncError,
+              "Script positions could not be synchronized.",
+            ),
+            names,
+            showId: activeShow.id,
+          });
+        }
+        return;
+      }
+
+      if (!isCurrent) {
+        return;
+      }
 
       setScriptPositionState({
         error: null,
@@ -234,7 +259,7 @@ export default function PositionsPage() {
   ).filter((positionId) => existingPositionIds.has(positionId));
   const selectedPositionIdSet = new Set(selectedPositionIds);
 
-  const handleCreateGroup = (event: FormEvent<HTMLFormElement>) => {
+  const handleCreateGroup = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     if (!groupName.trim()) {
@@ -242,12 +267,29 @@ export default function PositionsPage() {
       return;
     }
 
-    createPositionGroup(activeShow.id, groupName);
-    setGroupName("");
-    setFeedback({ type: "success", message: "Position group created." });
+    setIsMutating(true);
+    setFeedback(null);
+
+    try {
+      await createPositionGroup(activeShow.id, groupName);
+      setGroupName("");
+      setFeedback({ type: "success", message: "Position group created." });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: getMutationError(
+          error,
+          "Position group could not be created.",
+        ),
+      });
+    } finally {
+      setIsMutating(false);
+    }
   };
 
-  const handleCreatePosition = (event: FormEvent<HTMLFormElement>) => {
+  const handleCreatePosition = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
     event.preventDefault();
 
     if (!positionName.trim()) {
@@ -255,13 +297,28 @@ export default function PositionsPage() {
       return;
     }
 
-    createFieldPosition(
-      activeShow.id,
-      selectedPositionGroupId || null,
-      positionName,
-    );
-    setPositionName("");
-    setFeedback({ type: "success", message: "Field position created." });
+    setIsMutating(true);
+    setFeedback(null);
+
+    try {
+      await createFieldPosition(
+        activeShow.id,
+        selectedPositionGroupId || null,
+        positionName,
+      );
+      setPositionName("");
+      setFeedback({ type: "success", message: "Field position created." });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: getMutationError(
+          error,
+          "Field position could not be created.",
+        ),
+      });
+    } finally {
+      setIsMutating(false);
+    }
   };
 
   const beginEdit = (id: string, value: string, type: "group" | "position") => {
@@ -277,26 +334,53 @@ export default function PositionsPage() {
     setEditValue("");
   };
 
-  const saveGroupName = (groupId: string) => {
+  const saveGroupName = async (groupId: string) => {
     if (!editValue.trim()) {
       setFeedback({ type: "error", message: "Group name cannot be empty." });
       return;
     }
 
-    renamePositionGroup(activeShow.id, groupId, editValue);
-    cancelEdit();
-    setFeedback({ type: "success", message: "Position group renamed." });
+    setIsMutating(true);
+    setFeedback(null);
+
+    try {
+      await renamePositionGroup(activeShow.id, groupId, editValue);
+      cancelEdit();
+      setFeedback({ type: "success", message: "Position group renamed." });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: getMutationError(
+          error,
+          "Position group could not be renamed.",
+        ),
+      });
+    } finally {
+      setIsMutating(false);
+    }
   };
 
-  const savePositionName = (positionId: string) => {
+  const savePositionName = async (positionId: string) => {
     if (!editValue.trim()) {
       setFeedback({ type: "error", message: "Position name cannot be empty." });
       return;
     }
 
-    renameFieldPosition(activeShow.id, positionId, editValue);
-    cancelEdit();
-    setFeedback({ type: "success", message: "Position renamed." });
+    setIsMutating(true);
+    setFeedback(null);
+
+    try {
+      await renameFieldPosition(activeShow.id, positionId, editValue);
+      cancelEdit();
+      setFeedback({ type: "success", message: "Position renamed." });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: getMutationError(error, "Position could not be renamed."),
+      });
+    } finally {
+      setIsMutating(false);
+    }
   };
 
   const toggleSection = (sectionKey: string) => {
@@ -364,17 +448,36 @@ export default function PositionsPage() {
     }));
   };
 
-  const handleBulkMove = (groupId: string | null) => {
+  const handleBulkMove = async (groupId: string | null) => {
     const movedPositionCount = selectedPositionIds.length;
 
-    moveFieldPositions(activeShow.id, selectedPositionIds, groupId);
-    setFeedback({
-      type: "success",
-      message: `${movedPositionCount} position${
-        movedPositionCount === 1 ? "" : "s"
-      } ${groupId ? "moved to the selected group" : "ungrouped"}.`,
-    });
-    clearSelection();
+    setIsMutating(true);
+    setFeedback(null);
+
+    try {
+      await moveFieldPositions(
+        activeShow.id,
+        selectedPositionIds,
+        groupId,
+      );
+      setFeedback({
+        type: "success",
+        message: `${movedPositionCount} position${
+          movedPositionCount === 1 ? "" : "s"
+        } ${groupId ? "moved to the selected group" : "ungrouped"}.`,
+      });
+      clearSelection();
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: getMutationError(
+          error,
+          "Selected positions could not be moved.",
+        ),
+      });
+    } finally {
+      setIsMutating(false);
+    }
   };
 
   return (
@@ -444,28 +547,46 @@ export default function PositionsPage() {
                 </div>
                 <button
                   className="shrink-0 rounded-md bg-[#6d28d9] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#7c3aed]"
+                  disabled={isMutating}
                   onClick={() => {
-                    const summary = syncScriptPositions(
+                    setIsMutating(true);
+                    setFeedback(null);
+                    void syncScriptPositions(
                       activeShow.id,
                       scriptPositionNames,
-                    );
-                    setImportResult({
-                      mode: "manual",
-                      showId: activeShow.id,
-                      summary,
-                    });
-                    if (summary.positionsImported > 0) {
-                      setOpenSectionsByShow((current) => ({
-                        ...current,
-                        [activeShow.id]: Array.from(
-                          new Set([
-                            ...(current[activeShow.id] ?? []),
-                            "ungrouped",
-                          ]),
-                        ),
-                      }));
-                    }
-                    setFeedback(null);
+                    )
+                      .then((summary) => {
+                        setImportResult({
+                          mode: "manual",
+                          showId: activeShow.id,
+                          summary,
+                        });
+                        if (summary.positionsImported > 0) {
+                          setOpenSectionsByShow((current) => ({
+                            ...current,
+                            [activeShow.id]: Array.from(
+                              new Set([
+                                ...(current[activeShow.id] ?? []),
+                                "ungrouped",
+                              ]),
+                            ),
+                          }));
+                        }
+                        setFeedback({
+                          type: "success",
+                          message: "Script positions synchronized.",
+                        });
+                      })
+                      .catch((error) => {
+                        setFeedback({
+                          type: "error",
+                          message: getMutationError(
+                            error,
+                            "Script positions could not be synchronized.",
+                          ),
+                        });
+                      })
+                      .finally(() => setIsMutating(false));
                   }}
                   type="button"
                 >
@@ -543,6 +664,7 @@ export default function PositionsPage() {
                 />
                 <button
                   className="rounded-md bg-[#6d28d9] px-4 py-2 text-sm font-semibold text-white hover:bg-[#7c3aed]"
+                  disabled={isMutating}
                   type="submit"
                 >
                   Create Group
@@ -581,6 +703,7 @@ export default function PositionsPage() {
                 </select>
                 <button
                   className="w-full rounded-md bg-[#6d28d9] px-4 py-3 text-sm font-semibold text-white hover:bg-[#7c3aed] sm:col-span-2"
+                  disabled={isMutating}
                   type="submit"
                 >
                   Add Position
@@ -591,7 +714,11 @@ export default function PositionsPage() {
         </>
       ) : null}
 
-      {feedback ? (
+      {showData.error ? (
+        <p className="rounded-lg border border-[#ef4444]/35 bg-[#2a0b13] px-4 py-3 text-sm font-semibold text-[#fecaca]">
+          {showData.error}
+        </p>
+      ) : feedback ? (
         <p
           className={`rounded-lg border px-4 py-3 text-sm font-semibold ${
             feedback.type === "success"
@@ -609,6 +736,12 @@ export default function PositionsPage() {
         positions={showData.positions}
         showId={activeShow.id}
       />
+
+      {showData.isLoading ? (
+        <p className="text-sm text-[#94a3b8]">
+          Loading shared position setup...
+        </p>
+      ) : null}
 
       <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-5 shadow-xl shadow-black/20">
         <div className="flex flex-col gap-4 border-b border-white/10 pb-4 md:flex-row md:items-end md:justify-between">
@@ -674,10 +807,11 @@ export default function PositionsPage() {
                 className="h-10 min-w-48 rounded-md border border-[#8b5cf6]/45 bg-[#070b18] px-3 text-sm font-semibold text-white outline-none focus:border-[#a78bfa]"
                 onChange={(event) => {
                   if (event.target.value) {
-                    handleBulkMove(event.target.value);
+                    void handleBulkMove(event.target.value);
                     event.target.value = "";
                   }
                 }}
+                disabled={isMutating}
                 value=""
               >
                 <option value="">Move To Group</option>
@@ -689,7 +823,8 @@ export default function PositionsPage() {
               </select>
               <button
                 className="rounded-md border border-[#f59e0b]/40 bg-[#3a2407]/70 px-4 py-2 text-sm font-semibold text-[#fde68a] transition hover:border-[#f59e0b]/70"
-                onClick={() => handleBulkMove(null)}
+                disabled={isMutating}
+                onClick={() => void handleBulkMove(null)}
                 type="button"
               >
                 Ungroup
@@ -741,12 +876,30 @@ export default function PositionsPage() {
                 onCancelEdit={cancelEdit}
                 onDeleteGroup={
                   group
-                    ? () => {
-                        deletePositionGroup(activeShow.id, group.id);
-                        setFeedback({
-                          type: "success",
-                          message: `${group.name} deleted. Its positions are now ungrouped.`,
-                        });
+                    ? async () => {
+                        setIsMutating(true);
+                        setFeedback(null);
+
+                        try {
+                          await deletePositionGroup(
+                            activeShow.id,
+                            group.id,
+                          );
+                          setFeedback({
+                            type: "success",
+                            message: `${group.name} deleted. Its positions are now ungrouped.`,
+                          });
+                        } catch (error) {
+                          setFeedback({
+                            type: "error",
+                            message: getMutationError(
+                              error,
+                              `${group.name} could not be deleted.`,
+                            ),
+                          });
+                        } finally {
+                          setIsMutating(false);
+                        }
                       }
                     : () => undefined
                 }
@@ -755,6 +908,7 @@ export default function PositionsPage() {
                 onSaveGroup={saveGroupName}
                 onSavePosition={savePositionName}
                 onFeedback={setFeedback}
+                isMutating={isMutating}
                 onTogglePositionSelection={togglePositionSelection}
                 positions={positions}
                 selectedPositionIds={selectedPositionIdSet}
@@ -777,6 +931,7 @@ function PositionSection({
   group,
   isOpen,
   isDirector,
+  isMutating,
   onBeginEdit,
   onCancelEdit,
   onDeleteGroup,
@@ -797,13 +952,14 @@ function PositionSection({
   group: PositionGroup | null;
   isOpen: boolean;
   isDirector: boolean;
+  isMutating: boolean;
   onBeginEdit: (id: string, value: string, type: "group" | "position") => void;
   onCancelEdit: () => void;
-  onDeleteGroup: () => void;
+  onDeleteGroup: () => void | Promise<void>;
   onEditValueChange: (value: string) => void;
   onFeedback: (feedback: { type: "success" | "error"; message: string }) => void;
-  onSaveGroup: (groupId: string) => void;
-  onSavePosition: (positionId: string) => void;
+  onSaveGroup: (groupId: string) => void | Promise<void>;
+  onSavePosition: (positionId: string) => void | Promise<void>;
   onToggle: () => void;
   onTogglePositionSelection: (
     positionId: string,
@@ -858,7 +1014,10 @@ function PositionSection({
           <div className="flex gap-2">
             {isEditingGroup ? (
               <>
-                <SmallButton onClick={() => onSaveGroup(group.id)}>
+                <SmallButton
+                  disabled={isMutating}
+                  onClick={() => void onSaveGroup(group.id)}
+                >
                   Save
                 </SmallButton>
                 <SmallButton onClick={onCancelEdit} secondary>
@@ -873,7 +1032,11 @@ function PositionSection({
                 >
                   Rename
                 </SmallButton>
-                <SmallButton onClick={onDeleteGroup} danger>
+                <SmallButton
+                  disabled={isMutating}
+                  onClick={() => void onDeleteGroup()}
+                  danger
+                >
                   Delete
                 </SmallButton>
               </>
@@ -940,7 +1103,12 @@ function PositionSection({
                     <div className="flex flex-wrap items-center gap-2">
                       {isEditing ? (
                         <>
-                          <SmallButton onClick={() => onSavePosition(position.id)}>
+                          <SmallButton
+                            disabled={isMutating}
+                            onClick={() =>
+                              void onSavePosition(position.id)
+                            }
+                          >
                             Save
                           </SmallButton>
                           <SmallButton onClick={onCancelEdit} secondary>
@@ -951,16 +1119,30 @@ function PositionSection({
                         <>
                           <select
                             className="h-9 rounded-md border border-white/15 bg-[#020617] px-2 text-sm font-semibold text-white outline-none focus:border-[#a78bfa]"
+                            disabled={isMutating}
                             onChange={(event) => {
-                              moveFieldPosition(
+                              const nextGroupId =
+                                event.target.value || null;
+                              void moveFieldPosition(
                                 activeShowId,
                                 position.id,
-                                event.target.value || null,
-                              );
-                              onFeedback({
-                                type: "success",
-                                message: `${position.name} moved.`,
-                              });
+                                nextGroupId,
+                              )
+                                .then(() => {
+                                  onFeedback({
+                                    type: "success",
+                                    message: `${position.name} moved.`,
+                                  });
+                                })
+                                .catch((error) => {
+                                  onFeedback({
+                                    type: "error",
+                                    message: getMutationError(
+                                      error,
+                                      `${position.name} could not be moved.`,
+                                    ),
+                                  });
+                                });
                             }}
                             value={position.groupId ?? ""}
                           >
@@ -980,12 +1162,27 @@ function PositionSection({
                             Edit
                           </SmallButton>
                           <SmallButton
+                            disabled={isMutating}
                             onClick={() => {
-                              deleteFieldPosition(activeShowId, position.id);
-                              onFeedback({
-                                type: "success",
-                                message: `${position.name} deleted.`,
-                              });
+                              void deleteFieldPosition(
+                                activeShowId,
+                                position.id,
+                              )
+                                .then(() => {
+                                  onFeedback({
+                                    type: "success",
+                                    message: `${position.name} deleted.`,
+                                  });
+                                })
+                                .catch((error) => {
+                                  onFeedback({
+                                    type: "error",
+                                    message: getMutationError(
+                                      error,
+                                      `${position.name} could not be deleted.`,
+                                    ),
+                                  });
+                                });
                             }}
                             danger
                           >
@@ -1009,11 +1206,13 @@ function PositionSection({
 function SmallButton({
   children,
   danger = false,
+  disabled = false,
   onClick,
   secondary = false,
 }: {
   children: ReactNode;
   danger?: boolean;
+  disabled?: boolean;
   onClick: () => void;
   secondary?: boolean;
 }) {
@@ -1026,6 +1225,7 @@ function SmallButton({
   return (
     <button
       className={`rounded-md border px-3 py-2 text-xs font-semibold ${className}`}
+      disabled={disabled}
       onClick={onClick}
       type="button"
     >

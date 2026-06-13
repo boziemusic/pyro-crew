@@ -1132,6 +1132,22 @@ export default function DirectorConsolePage() {
             </p>
           </div>
         </div>
+        {activeShow ? (
+          <div className="mt-3 flex flex-col gap-1 rounded-lg border border-[#8b5cf6]/30 bg-[#17102c]/80 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#a78bfa]">
+                Technician Join Code
+              </p>
+              <p className="mt-1 text-xs text-[#94a3b8]">
+                Share this code with technicians joining on mobile.
+              </p>
+            </div>
+            <p className="font-mono text-2xl font-bold tracking-[0.25em] text-white">
+              {activeShow.show_code ?? "Not assigned"}
+            </p>
+            {/* TODO: QR code will encode a technician join URL containing the show_code. */}
+          </div>
+        ) : null}
         <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
           {technicianOverview.map((technician) => (
             <TechOverviewCard

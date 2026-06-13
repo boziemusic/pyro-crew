@@ -9,14 +9,16 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useRouter } from "next/navigation";
-import { createSupabaseBrowserClient } from "@/lib/supabase";
+import {
+  createSupabaseBrowserClient,
+  isSupabaseConfigured,
+} from "@/lib/supabase";
 import { NativeDateInput } from "@/components/native-date-input";
 import {
-  ACTIVE_SHOW_EVENT,
-  ACTIVE_SHOW_STORAGE_KEY,
   ActiveShow,
   getServerActiveShowSnapshot,
   readActiveShowSnapshot,
+  setActiveShow,
   subscribeToActiveShowStore,
 } from "@/components/active-show-strip";
 import {
@@ -25,11 +27,15 @@ import {
   type ActiveContinuitySession,
   useActiveContinuitySession,
 } from "@/components/active-continuity-session";
-import { deleteShowPositionData } from "@/components/position-store";
-import { deleteShowFieldMapData } from "@/components/field-map-store";
 import { removeResolutionNoticeAcknowledgements } from "@/components/resolution-notice-store";
 import { removeTemporaryHandoffsForShow } from "@/components/temporary-handoff-store";
 import { removeTemporaryTechnicianData } from "@/components/temporary-technician-store";
+import {
+  setSelectedTemporaryTechnician,
+  TEMPORARY_TECHNICIANS,
+  type TemporaryTechnicianId,
+  useSelectedTemporaryTechnician,
+} from "@/components/temporary-technician-store";
 import {
   SCRIPT_ADAPTERS,
   type ScriptAdapterKey,
@@ -50,6 +56,7 @@ type ShowRecord = {
   id: string;
   company_id: string | null;
   name: string;
+  show_code: string | null;
   location: string | null;
   show_date: string | null;
   show_mode: ShowMode;
@@ -73,12 +80,41 @@ type ScriptEventPreview = {
   rows: ScriptEventRow[];
 };
 
+type TechnicianJoinStatus =
+  | "idle"
+  | "looking_up_show"
+  | "checking_session"
+  | "no_match"
+  | "no_active_session"
+  | "error"
+  | "joined";
+
 const fieldClassName =
   "rounded-lg border border-[#334155] bg-[#020617] px-3 py-3 text-base font-semibold text-white placeholder:text-[#94a3b8] focus:border-[#8b5cf6] focus:outline-none focus:ring-2 focus:ring-[#4c00a4]/60";
 
 const firingSystemLabels: Record<FiringSystem, string> = {
   cobra_6x: "COBRA 6.X",
 };
+
+const SHOW_CODE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateShowCode() {
+  const randomValues = new Uint32Array(4);
+  window.crypto.getRandomValues(randomValues);
+
+  return Array.from(
+    randomValues,
+    (value) => SHOW_CODE_CHARACTERS[value % SHOW_CODE_CHARACTERS.length],
+  ).join("");
+}
+
+function normalizeJoinCode(value: string) {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 4);
+}
 
 function formatShowDate(showDate: string | null) {
   if (!showDate) {
@@ -114,17 +150,35 @@ function formatSessionDate(timestamp: string | null | undefined) {
   }).format(new Date(timestamp));
 }
 
-function writeActiveShow(show: ActiveShow | null) {
-  if (show) {
-    window.localStorage.setItem(ACTIVE_SHOW_STORAGE_KEY, JSON.stringify(show));
-  } else {
-    window.localStorage.removeItem(ACTIVE_SHOW_STORAGE_KEY);
+export function ShowsWorkspace() {
+  if (!isSupabaseConfigured) {
+    return (
+      <>
+        <div className="md:hidden">
+          <MobileTechnicianEntry
+            isEntering={false}
+            joinStatus="error"
+            lastError="Supabase is not configured on this device/session."
+            message={null}
+            onContinue={() => undefined}
+            onSelectTechnician={() => undefined}
+            selectedTechnician="tech_1"
+            supabaseConfigured={false}
+          />
+        </div>
+        <div className="hidden px-8 py-10 md:block">
+          <p className="rounded-lg border border-[#ef4444]/40 bg-[#2a0b13] p-5 font-semibold text-[#fecaca]">
+            Supabase is not configured on this device/session.
+          </p>
+        </div>
+      </>
+    );
   }
 
-  window.dispatchEvent(new Event(ACTIVE_SHOW_EVENT));
+  return <ConfiguredShowsWorkspace />;
 }
 
-export function ShowsWorkspace() {
+function ConfiguredShowsWorkspace() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const router = useRouter();
   const [shows, setShows] = useState<ShowRecord[]>([]);
@@ -134,6 +188,17 @@ export function ShowsWorkspace() {
     getServerActiveShowSnapshot,
   );
   const activeSession = useActiveContinuitySession();
+  const selectedTechnician = useSelectedTemporaryTechnician();
+  const [mobileJoinStatus, setMobileJoinStatus] =
+    useState<TechnicianJoinStatus>("idle");
+  const [mobileJoinLastError, setMobileJoinLastError] = useState<string | null>(
+    null,
+  );
+  const [isEnteringTechnicianConsole, setIsEnteringTechnicianConsole] =
+    useState(false);
+  const [mobileEntryMessage, setMobileEntryMessage] = useState<string | null>(
+    null,
+  );
   const [name, setName] = useState("");
   const [showMode, setShowMode] = useState<ShowMode>("scripted");
   const [showDate, setShowDate] = useState("");
@@ -198,7 +263,7 @@ export function ShowsWorkspace() {
     return supabase
       .from("shows")
       .select(
-        "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+        "id, company_id, name, show_code, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
       )
       .order("created_at", { ascending: false });
   }, [supabase]);
@@ -274,6 +339,7 @@ export function ShowsWorkspace() {
     const nextActiveShow: ActiveShow = {
       id: show.id,
       name: show.name,
+      show_code: show.show_code,
       show_mode: show.show_mode,
       firing_system: show.firing_system,
       script_adapter: show.script_adapter,
@@ -285,7 +351,7 @@ export function ShowsWorkspace() {
       setActiveContinuitySession(null);
     }
 
-    writeActiveShow(nextActiveShow);
+    setActiveShow(nextActiveShow);
   }
 
   async function openSessionOnboarding(show: ShowRecord) {
@@ -458,27 +524,48 @@ export function ShowsWorkspace() {
       return;
     }
 
-    const { data, error } = await supabase
-      .from("shows")
-      .insert({
-        firing_system: firingSystem || null,
-        location: location.trim() || null,
-        name: trimmedName,
-        script_adapter: null,
-        script_filename: null,
-        script_uploaded_at: null,
-        show_date: showDate || null,
-        show_mode: showMode,
-      })
-      .select(
-        "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
-      )
-      .single();
+    let data: ShowRecord | null = null;
+    let creationError: { code?: string; message: string } | null = null;
 
-    if (error) {
-      setMessage(`Could not create show: ${error.message}`);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await supabase
+        .from("shows")
+        .insert({
+          firing_system: firingSystem || null,
+          location: location.trim() || null,
+          name: trimmedName,
+          script_adapter: null,
+          script_filename: null,
+          script_uploaded_at: null,
+          show_code: generateShowCode(),
+          show_date: showDate || null,
+          show_mode: showMode,
+        })
+        .select(
+          "id, company_id, name, show_code, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+        )
+        .single();
+
+      if (!result.error) {
+        data = result.data as ShowRecord;
+        creationError = null;
+        break;
+      }
+
+      creationError = result.error;
+
+      if (
+        result.error.code !== "23505" ||
+        !result.error.message.toLowerCase().includes("show_code")
+      ) {
+        break;
+      }
+    }
+
+    if (creationError) {
+      setMessage(`Could not create show: ${creationError.message}`);
     } else if (data) {
-      let createdShow = data as ShowRecord;
+      let createdShow = data;
       let importedScriptEventCount: number | null = null;
       let skippedScriptRowCount = parsedResult?.skippedRowCount ?? 0;
 
@@ -504,7 +591,7 @@ export function ShowsWorkspace() {
               })
               .eq("id", createdShow.id)
               .select(
-                "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+                "id, company_id, name, show_code, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
               )
               .single();
 
@@ -599,7 +686,7 @@ export function ShowsWorkspace() {
       .update({ firing_system: nextFiringSystem || null })
       .eq("id", show.id)
       .select(
-        "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+        "id, company_id, name, show_code, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
       )
       .single();
 
@@ -648,7 +735,7 @@ export function ShowsWorkspace() {
         })
         .eq("id", show.id)
         .select(
-          "id, company_id, name, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+          "id, company_id, name, show_code, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
         )
         .single();
 
@@ -777,14 +864,14 @@ export function ShowsWorkspace() {
       return;
     }
 
-    deleteShowPositionData(show.id);
-    deleteShowFieldMapData(show.id);
+    // position_groups, positions, and field_map_markers use ON DELETE CASCADE.
+    // TODO(field map storage): safely remove the show's Storage object after deletion.
     removeTemporaryTechnicianData(issueIds);
     removeTemporaryHandoffsForShow(show.id);
     removeResolutionNoticeAcknowledgements(issueIds);
 
     if (activeShow?.id === show.id) {
-      writeActiveShow(null);
+      setActiveShow(null);
     }
 
     if (activeSession?.show_id === show.id) {
@@ -874,7 +961,127 @@ export function ShowsWorkspace() {
     setIsStartingSession(false);
   };
 
+  const continueToTechnicianConsole = async (showCode: string) => {
+    const normalizedShowCode = normalizeJoinCode(showCode);
+    const hasSelectedTechnician = TEMPORARY_TECHNICIANS.some(
+      (technician) => technician.id === selectedTechnician,
+    );
+
+    if (!/^[A-Z0-9]{4}$/.test(normalizedShowCode)) {
+      setMobileEntryMessage("Enter a 4-character show code.");
+      setMobileJoinStatus("error");
+      setMobileJoinLastError("Show code validation failed.");
+      return;
+    }
+
+    if (!hasSelectedTechnician) {
+      setMobileEntryMessage("Select a technician identity.");
+      setMobileJoinStatus("error");
+      setMobileJoinLastError("Technician identity validation failed.");
+      return;
+    }
+
+    setIsEnteringTechnicianConsole(true);
+    setMobileEntryMessage(null);
+    setMobileJoinLastError(null);
+    setMobileJoinStatus("looking_up_show");
+    setSelectedTemporaryTechnician(selectedTechnician);
+
+    try {
+      const { data: matchedShow, error: showError } = await supabase
+        .from("shows")
+        .select(
+          "id, company_id, name, show_code, location, show_date, show_mode, firing_system, script_adapter, script_filename, script_uploaded_at, status, created_by_user_id, created_at, updated_at",
+        )
+        .eq("show_code", normalizedShowCode)
+        .maybeSingle();
+
+      if (showError) {
+        const errorMessage = `Could not look up show: ${showError.message}`;
+        setMobileEntryMessage(errorMessage);
+        setMobileJoinStatus("error");
+        setMobileJoinLastError(showError.message);
+        return;
+      }
+
+      if (!matchedShow) {
+        setMobileEntryMessage("No show found for that code.");
+        setMobileJoinStatus("no_match");
+        setMobileJoinLastError("No show matched the normalized code.");
+        return;
+      }
+
+      const show = matchedShow as ShowRecord;
+      activateShow(show);
+      setMobileJoinStatus("checking_session");
+
+      const { data: session, error: sessionError } = await supabase
+        .from("continuity_sessions")
+        .select("id, show_id, name, status, started_at")
+        .eq("show_id", show.id)
+        .eq("status", "active")
+        .is("ended_at", null)
+        .order("started_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (sessionError) {
+        setActiveContinuitySession(null);
+        setMobileEntryMessage(
+          `Could not check the active continuity session: ${sessionError.message}`,
+        );
+        setMobileJoinStatus("error");
+        setMobileJoinLastError(sessionError.message);
+        return;
+      }
+
+      if (!session) {
+        setActiveContinuitySession(null);
+        setMobileEntryMessage(
+          "Show found, but no active continuity session. Ask the Director to start one.",
+        );
+        setMobileJoinStatus("no_active_session");
+        setMobileJoinLastError("No active continuity session was found.");
+        return;
+      }
+
+      setActiveContinuitySession(session as ActiveContinuitySession);
+      setSelectedTemporaryTechnician(selectedTechnician);
+      setMobileJoinStatus("joined");
+      router.push("/technician");
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown join error.";
+      setMobileEntryMessage(`Could not join show: ${errorMessage}`);
+      setMobileJoinStatus("error");
+      setMobileJoinLastError(errorMessage);
+    } finally {
+      setIsEnteringTechnicianConsole(false);
+    }
+  };
+
   return (
+    <>
+      <div className="md:hidden">
+      <MobileTechnicianEntry
+        isEntering={isEnteringTechnicianConsole}
+        joinStatus={mobileJoinStatus}
+        lastError={mobileJoinLastError}
+        message={mobileEntryMessage}
+        onContinue={(showCode) =>
+          void continueToTechnicianConsole(showCode)
+        }
+        onSelectTechnician={(technicianId) => {
+          setSelectedTemporaryTechnician(technicianId);
+          setMobileEntryMessage(null);
+          setMobileJoinLastError(null);
+          setMobileJoinStatus("idle");
+        }}
+        selectedTechnician={selectedTechnician}
+        supabaseConfigured={isSupabaseConfigured}
+      />
+      </div>
+      <div className="hidden md:block">
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-5 py-6 sm:px-8 lg:py-8">
       {showsView !== "landing" ? (
         <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25">
@@ -895,7 +1102,7 @@ export function ShowsWorkspace() {
               </p>
             </div>
             <button
-              className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-[#dbe4ef] transition hover:border-[#8b5cf6] hover:text-white"
+            className="min-h-11 touch-manipulation rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-[#dbe4ef] transition hover:border-[#8b5cf6] hover:text-white active:border-[#8b5cf6] active:text-white"
               onClick={() => {
                 setShowsView("landing");
                 setMessage(null);
@@ -918,7 +1125,7 @@ export function ShowsWorkspace() {
       {showsView === "landing" ? (
         <section className="grid gap-4 md:grid-cols-2">
           <button
-            className="group rounded-lg border border-[#8b5cf6]/45 bg-[#17102c] p-6 text-left shadow-xl shadow-black/20 transition hover:border-[#a78bfa] hover:bg-[#1d1238]"
+            className="group min-h-44 touch-manipulation rounded-lg border border-[#8b5cf6]/45 bg-[#17102c] p-6 text-left shadow-xl shadow-black/20 transition hover:border-[#a78bfa] hover:bg-[#1d1238] active:border-[#a78bfa] active:bg-[#1d1238]"
             onClick={() => {
               setMessage(null);
               setShowsView("create");
@@ -936,7 +1143,7 @@ export function ShowsWorkspace() {
             </span>
           </button>
           <button
-            className="group rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 text-left shadow-xl shadow-black/20 transition hover:border-[#8b5cf6] hover:bg-[#10172a]"
+            className="group min-h-44 touch-manipulation rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 text-left shadow-xl shadow-black/20 transition hover:border-[#8b5cf6] hover:bg-[#10172a] active:border-[#8b5cf6] active:bg-[#10172a]"
             onClick={() => {
               setMessage(null);
               setShowsView("library");
@@ -1096,7 +1303,7 @@ export function ShowsWorkspace() {
               </h2>
             </div>
             <button
-              className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-[#dbe4ef] transition hover:border-[#8b5cf6] hover:text-white"
+              className="min-h-11 touch-manipulation rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-[#dbe4ef] transition hover:border-[#8b5cf6] hover:text-white active:border-[#8b5cf6] active:text-white"
               onClick={() => void loadShows()}
               type="button"
             >
@@ -1137,7 +1344,7 @@ export function ShowsWorkspace() {
                       <button
                         aria-controls={`show-details-${show.id}`}
                         aria-expanded={isExpanded}
-                        className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition hover:bg-white/5"
+                        className="flex min-h-14 min-w-0 touch-manipulation flex-1 items-center gap-3 px-4 py-3 text-left transition hover:bg-white/5 active:bg-white/10"
                         onClick={() => void toggleShowDetails(show.id)}
                         type="button"
                       >
@@ -1160,10 +1367,10 @@ export function ShowsWorkspace() {
                       </button>
                       <div className="flex shrink-0 items-center border-l border-white/10 px-3">
                         <button
-                          className={`rounded-md px-3 py-2 text-sm font-semibold transition ${
+                          className={`min-h-11 touch-manipulation rounded-md px-3 py-2 text-sm font-semibold transition ${
                             isActive
                               ? "border border-[#22c55e]/40 bg-[#082515] text-[#bbf7d0]"
-                              : "bg-[#6d28d9] text-white hover:bg-[#7c3aed]"
+                              : "bg-[#6d28d9] text-white hover:bg-[#7c3aed] active:bg-[#7c3aed]"
                           }`}
                           onClick={() => void openSessionOnboarding(show)}
                           type="button"
@@ -1189,6 +1396,14 @@ export function ShowsWorkspace() {
                             <dt className="text-[#64748b]">Show Type</dt>
                             <dd className="mt-1 capitalize text-[#dbe4ef]">
                               {show.show_mode}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-[#64748b]">
+                              Technician Join Code
+                            </dt>
+                            <dd className="mt-1 font-mono text-xl font-bold tracking-[0.2em] text-[#c4b5fd]">
+                              {show.show_code ?? "Not assigned"}
                             </dd>
                           </div>
                           <div>
@@ -1539,6 +1754,166 @@ export function ShowsWorkspace() {
             </div>
           </div>
         </div>
+      ) : null}
+    </div>
+      </div>
+    </>
+  );
+}
+
+function MobileTechnicianEntry({
+  isEntering,
+  joinStatus,
+  lastError,
+  message,
+  onContinue,
+  onSelectTechnician,
+  selectedTechnician,
+  supabaseConfigured,
+}: {
+  isEntering: boolean;
+  joinStatus: TechnicianJoinStatus;
+  lastError: string | null;
+  message: string | null;
+  onContinue: (showCode: string) => void;
+  onSelectTechnician: (technicianId: TemporaryTechnicianId) => void;
+  selectedTechnician: TemporaryTechnicianId;
+  supabaseConfigured: boolean;
+}) {
+  const [joinCode, setJoinCode] = useState("");
+  const normalizedJoinCode = normalizeJoinCode(joinCode);
+  const hasSelectedTechnician = TEMPORARY_TECHNICIANS.some(
+    (technician) => technician.id === selectedTechnician,
+  );
+  const isJoinEnabled =
+    joinCode.length === 4 && hasSelectedTechnician && !isEntering;
+
+  return (
+    <div className="mx-auto flex w-full max-w-lg flex-col gap-5 px-4 py-5">
+      <section className="rounded-xl border border-[#8b5cf6]/35 bg-[#0b1020]/95 p-5 shadow-2xl shadow-black/30">
+        <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#a78bfa]">
+          Technician Entry
+        </p>
+        <h1 className="mt-3 text-3xl font-semibold text-white">
+          Join field operations
+        </h1>
+        <p className="mt-3 text-sm leading-6 text-[#b6c3d1]">
+          Select the active display and your technician identity. Show setup
+          and session creation remain Director workflows on a desktop or
+          laptop.
+        </p>
+      </section>
+
+      <section className="rounded-xl border border-white/10 bg-[#0b1020]/95 p-4 shadow-xl shadow-black/20">
+        <div className="flex min-h-11 items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#94a3b8]">
+              Step 1
+            </p>
+            <h2 className="mt-1 text-lg font-semibold text-white">
+              Enter Show Code
+            </h2>
+          </div>
+        </div>
+
+        <input
+          aria-label="Enter Show Code"
+          autoCapitalize="characters"
+          autoComplete="off"
+          autoCorrect="off"
+          className="mt-4 min-h-16 w-full touch-manipulation rounded-xl border border-white/15 bg-[#070b18] px-4 py-3 text-center font-mono text-3xl font-bold uppercase tracking-[0.25em] text-white outline-none focus:border-[#8b5cf6] focus:ring-2 focus:ring-[#4c00a4]/40"
+          inputMode="text"
+          maxLength={4}
+          onChange={(event) =>
+            setJoinCode(normalizeJoinCode(event.currentTarget.value))
+          }
+          placeholder="AB12"
+          spellCheck={false}
+          type="text"
+          value={joinCode}
+        />
+        <p
+          aria-live="polite"
+          className="mt-2 font-mono text-sm font-bold text-[#c4b5fd]"
+        >
+          LIVE INPUT STATE: {joinCode || "(empty)"}
+        </p>
+        <div
+          aria-live="polite"
+          className="mt-3 rounded-lg border border-white/10 bg-[#050816] p-3 font-mono text-xs leading-5 text-[#94a3b8]"
+        >
+          <p>Raw joinCode: {joinCode || "(empty)"}</p>
+          <p>
+            Normalized joinCode: {normalizedJoinCode || "(empty)"}
+          </p>
+          <p>Button enabled: {isJoinEnabled ? "yes" : "no"}</p>
+        </div>
+        <p className="mt-2 text-xs leading-5 text-[#94a3b8]">
+          Ask the Director for the four-character Technician Join Code.
+        </p>
+      </section>
+
+      <section className="rounded-xl border border-white/10 bg-[#0b1020]/95 p-4 shadow-xl shadow-black/20">
+        <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#94a3b8]">
+          Step 2
+        </p>
+        <h2 className="mt-1 text-lg font-semibold text-white">
+          Technician Identity
+        </h2>
+        <select
+          aria-label="Select Technician"
+          className="mt-4 min-h-14 w-full touch-manipulation rounded-xl border border-white/15 bg-[#070b18] px-4 py-3 text-base font-semibold text-white outline-none focus:border-[#8b5cf6] focus:ring-2 focus:ring-[#4c00a4]/40"
+          onChange={(event) =>
+            onSelectTechnician(
+              event.target.value as TemporaryTechnicianId,
+            )
+          }
+          value={selectedTechnician}
+        >
+          {TEMPORARY_TECHNICIANS.map((technician) => (
+            <option key={technician.id} value={technician.id}>
+              {technician.label}
+            </option>
+          ))}
+        </select>
+      </section>
+
+      {message ? (
+        <p
+          aria-live="polite"
+          className="rounded-xl border border-[#f59e0b]/40 bg-[#2a1c06] p-4 text-sm font-semibold leading-6 text-[#fde68a]"
+        >
+          {message}
+        </p>
+      ) : null}
+
+      <div className="rounded-xl border border-white/10 bg-[#050816] p-4 text-xs leading-5 text-[#94a3b8]">
+        <p className="font-bold uppercase tracking-[0.12em] text-[#cbd5e1]">
+          Join diagnostics
+        </p>
+        <p>
+          Normalized code: {normalizedJoinCode || "(empty)"}
+        </p>
+        <p>Button enabled: {isJoinEnabled ? "yes" : "no"}</p>
+        <p>Join status: {joinStatus}</p>
+        <p className="break-words">
+          Last error: {lastError ?? "none"}
+        </p>
+      </div>
+
+      <button
+        className="min-h-14 touch-manipulation rounded-xl bg-[#6d28d9] px-5 py-4 text-lg font-bold text-white shadow-xl shadow-[#4c00a4]/30 transition active:scale-[0.99] active:bg-[#7c3aed] disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={!isJoinEnabled}
+        onClick={() => onContinue(normalizedJoinCode)}
+        type="button"
+      >
+        {isEntering ? "Joining..." : "Join Technician Console"}
+      </button>
+
+      {!supabaseConfigured ? (
+        <p className="text-center text-sm font-semibold text-[#fecaca]">
+          Supabase is not configured on this device/session.
+        </p>
       ) : null}
     </div>
   );

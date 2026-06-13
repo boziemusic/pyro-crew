@@ -18,6 +18,12 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+button,
+a,
+select {
+  touch-action: manipulation;
+}
+
 input[type="date"] {
   color-scheme: dark;
 }
