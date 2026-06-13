@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import {
-  clearFieldMap,
+  clearFieldMapImage,
   placeFieldMapMarker,
   placeFieldMapMarkers,
   removeFieldMapMarkers,
@@ -676,12 +676,17 @@ export function PositionsMap({
                 onClick={() => {
                   if (
                     window.confirm(
-                      "Remove the uploaded field map and all marker placements?",
+                      "Remove the uploaded field map image? Marker placements, position groups, and positions will be kept.",
                     )
                   ) {
-                    clearFieldMap(showId);
+                    clearFieldMapImage(showId);
                     cancelPlacement();
-                    setFeedback(null);
+                    setSelectedMarkerKeys([]);
+                    setFeedback({
+                      type: "success",
+                      message:
+                        "Field map image cleared. Marker placements and position data were kept.",
+                    });
                   }
                 }}
                 type="button"

@@ -188,14 +188,25 @@ export function removeFieldMapMarkers(
   });
 }
 
-export function clearFieldMap(showId: string) {
-  const nextStore = { ...readStoreSnapshot() };
-  delete nextStore[showId];
-  writeStore(nextStore);
+export function clearFieldMapImage(showId: string) {
+  const current = readStoreSnapshot()[showId];
+
+  if (!current) {
+    return;
+  }
+
+  writeShowMap(showId, {
+    ...current,
+    imageDataUrl: "",
+    imageName: "",
+    imageAspectRatio: EMPTY_FIELD_MAP.imageAspectRatio,
+  });
 }
 
 export function deleteShowFieldMapData(showId: string) {
-  clearFieldMap(showId);
+  const nextStore = { ...readStoreSnapshot() };
+  delete nextStore[showId];
+  writeStore(nextStore);
 }
 
 // TODO(google maps): support Google Maps as an optional future field-map provider.
