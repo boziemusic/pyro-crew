@@ -178,7 +178,12 @@ export async function unlockAppFeedback() {
     }
 
     const audioUnlocked = context.state === "running";
-    if (!audioUnlocked) {
+    if (audioUnlocked) {
+      updateDiagnostics({
+        audioUnlocked: true,
+        lastSoundDetail: "WebAudio is unlocked.",
+      });
+    } else {
       updateDiagnostics({
         audioUnlocked: false,
         lastSoundResult: "blocked",
@@ -416,4 +421,8 @@ export function vibrate(pattern: number | number[]) {
   } catch {
     // Unsupported or blocked vibration should remain silent.
   }
+}
+
+export function isVibrationSupported() {
+  return isBrowser() && "vibrate" in navigator;
 }

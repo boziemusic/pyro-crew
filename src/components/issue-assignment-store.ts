@@ -69,34 +69,36 @@ export async function assignIssueToTechnician({
   technicianId: TemporaryTechnicianId;
 }) {
   const supabase = createSupabaseBrowserClient();
-  const { data: currentAssignment, error: currentError } = await supabase
+  const { data: currentAssignments, error: currentError } = await supabase
     .from("issue_assignments")
     .select(
       "id, issue_id, show_id, session_id, technician_name, status, assigned_at, acknowledged_at",
     )
     .eq("issue_id", issueId)
-    .eq("status", "active")
-    .maybeSingle();
+    .eq("status", "active");
 
   if (currentError) {
     return { data: null, error: currentError };
   }
 
-  if (currentAssignment?.technician_name === technicianId) {
+  if (
+    currentAssignments?.length === 1 &&
+    currentAssignments[0].technician_name === technicianId
+  ) {
     return {
-      data: currentAssignment as IssueAssignment,
+      data: currentAssignments[0] as IssueAssignment,
       error: null,
     };
   }
 
-  if (currentAssignment) {
+  if (currentAssignments && currentAssignments.length > 0) {
     const { error: reassignError } = await supabase
       .from("issue_assignments")
       .update({
         status: "reassigned",
         updated_at: new Date().toISOString(),
       })
-      .eq("id", currentAssignment.id)
+      .eq("issue_id", issueId)
       .eq("status", "active");
 
     if (reassignError) {
@@ -118,14 +120,17 @@ export async function assignIssueToTechnician({
     )
     .single();
 
-  if (error && currentAssignment) {
+  if (error && currentAssignments && currentAssignments.length > 0) {
     await supabase
       .from("issue_assignments")
       .update({
         status: "active",
         updated_at: new Date().toISOString(),
       })
-      .eq("id", currentAssignment.id)
+      .in(
+        "id",
+        currentAssignments.map((assignment) => assignment.id),
+      )
       .eq("status", "reassigned");
   }
 

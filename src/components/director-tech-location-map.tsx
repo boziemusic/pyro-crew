@@ -60,10 +60,10 @@ const statusLabels = {
 
 const collisionOffsets = [
   { x: 0, y: 0 },
-  { x: 2.2, y: -2.2 },
-  { x: -2.2, y: -2.2 },
-  { x: 2.2, y: 2.2 },
-  { x: -2.2, y: 2.2 },
+  { x: 2.8, y: -2.8 },
+  { x: -2.8, y: -2.8 },
+  { x: 2.8, y: 2.8 },
+  { x: -2.8, y: 2.8 },
 ];
 
 function clampPercent(value: number) {
@@ -260,7 +260,7 @@ export function DirectorTechLocationMap({
 
                   return (
                     <span
-                      className={`absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold text-white/85 shadow-md ${
+                      className={`absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 px-2 py-1 text-xs font-bold text-white shadow-lg ${
                         marker.entityType === "group"
                           ? "border-[#c4b5fd]/45 bg-[#4c00a4]/65"
                           : "border-[#fecaca]/45 bg-[#991b1b]/65"
@@ -288,7 +288,7 @@ export function DirectorTechLocationMap({
                     >
                       <Link
                         aria-label={`${location.label}, ${statusLabels[location.status]}, ${location.positionName}`}
-                        className={`relative flex size-8 cursor-pointer items-center justify-center rounded-full border-2 text-[10px] font-black text-white shadow-[0_4px_14px_rgba(0,0,0,0.9)] after:absolute after:-bottom-1.5 after:left-1/2 after:size-2.5 after:-translate-x-1/2 after:rotate-45 after:border-b-2 after:border-r-2 after:border-inherit after:bg-inherit focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${technicianStyles[location.id].marker} ${
+                        className={`relative flex size-10 cursor-pointer items-center justify-center rounded-full border-[3px] text-xs font-black text-white shadow-[0_4px_16px_rgba(0,0,0,0.9)] after:absolute after:-bottom-2 after:left-1/2 after:size-3 after:-translate-x-1/2 after:rotate-45 after:border-b-[3px] after:border-r-[3px] after:border-inherit after:bg-inherit focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${technicianStyles[location.id].marker} ${
                           location.status === "working"
                             ? "border-dashed opacity-65 after:border-dashed"
                             : "border-solid"
@@ -301,7 +301,7 @@ export function DirectorTechLocationMap({
                         {location.shortLabel}
                       </Link>
                       <Link
-                        className={`invisible absolute bottom-10 left-1/2 z-30 hidden w-64 -translate-x-1/2 translate-y-2 cursor-pointer rounded-lg border p-3 opacity-0 shadow-2xl shadow-black/70 transition duration-200 ease-out group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 lg:block ${technicianStyles[location.id].accent}`}
+                        className={`invisible absolute bottom-12 left-1/2 z-30 hidden w-64 -translate-x-1/2 translate-y-2 cursor-pointer rounded-lg border p-3 opacity-0 shadow-2xl shadow-black/70 transition duration-200 ease-out group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 lg:block ${technicianStyles[location.id].accent}`}
                         href="/technician"
                         onClick={() =>
                           setSelectedTemporaryTechnician(location.id)

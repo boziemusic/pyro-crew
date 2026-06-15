@@ -17,8 +17,8 @@ import {
   getTemporaryTechnicianLabel,
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
-  useTemporaryAdditionalTechnicianAssignments,
 } from "@/components/temporary-technician-store";
+import { useActiveAdditionalTechnicianAssignments } from "@/components/collaboration-store";
 import {
   assignIssueToTechnician,
   clearActiveIssueAssignment,
@@ -82,14 +82,17 @@ export default function IssueDetailPage({
     useState<LatestHistoryNote | null>(null);
   const [timeline, setTimeline] = useState<IssueHistoryRecord[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const additionalAssignments =
-    useTemporaryAdditionalTechnicianAssignments();
   const assignmentSelectRef = useRef<HTMLSelectElement>(null);
   const {
     assignmentsByIssue,
     error: assignmentLoadError,
     refresh: refreshAssignments,
   } = useActiveIssueAssignments(issue?.show_id, issue?.session_id);
+  const { assignmentsByIssue: additionalAssignments } =
+    useActiveAdditionalTechnicianAssignments(
+      issue?.show_id,
+      issue?.session_id,
+    );
   const savedAssignment = assignmentsByIssue[id];
   const additionalAssignment = additionalAssignments[id];
 

@@ -19,11 +19,15 @@ import {
 } from "@/components/issue-identifiers";
 import {
   getTemporaryTechnicianLabel,
-  setTemporaryAdditionalTechnicianAssignment,
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
-  useTemporaryAdditionalTechnicianAssignments,
 } from "@/components/temporary-technician-store";
+import {
+  completeAdditionalTechnicianAssignments,
+  createAdditionalTechnicianAssignment,
+  createTechnicianNotice,
+  useActiveAdditionalTechnicianAssignments,
+} from "@/components/collaboration-store";
 import { getHistoryWriteFailureMessage } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import {
@@ -107,8 +111,15 @@ export function DirectorAttentionQueue({
       ? activeSession.id
       : null,
   );
-  const additionalAssignments =
-    useTemporaryAdditionalTechnicianAssignments();
+  const {
+    assignmentsByIssue: additionalAssignments,
+    refresh: refreshAdditionalAssignments,
+  } = useActiveAdditionalTechnicianAssignments(
+    activeShow?.id,
+    activeSession && activeSession.show_id === activeShow?.id
+      ? activeSession.id
+      : null,
+  );
   const [issues, setIssues] = useState<AttentionIssue[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeAction, setActiveAction] = useState<{
@@ -427,6 +438,58 @@ export function DirectorAttentionQueue({
       }
     }
 
+    const primaryTechnician = assignments[issue.id];
+    const isResolution =
+      newStatus === "verified_resolved" ||
+      newStatus === "closed" ||
+      newStatus === "unfixable";
+
+    if (primaryTechnician && activeShow) {
+      const noticeRecipients = new Set<TemporaryTechnicianId>([
+        primaryTechnician,
+      ]);
+      const additionalTechnician = additionalAssignments[issue.id];
+
+      if (additionalTechnician) {
+        noticeRecipients.add(additionalTechnician);
+      }
+
+      const noticeResults = await Promise.all(
+        [...noticeRecipients].map((technicianId) =>
+          createTechnicianNotice({
+            issueId: issue.id,
+            message: transitionNote,
+            noticeType: isResolution
+              ? "resolution"
+              : "director_response",
+            sessionId:
+              activeSession?.show_id === activeShow.id
+                ? activeSession.id
+                : null,
+            showId: activeShow.id,
+            technicianId,
+            title: isResolution
+              ? `Issue ${formatIssueLabel(newStatus)}`
+              : `Director Response: ${formatIssueLabel(newStatus)}`,
+          }),
+        ),
+      );
+      const noticeError = noticeResults.find(
+        (result) => result.error,
+      )?.error;
+
+      if (noticeError) {
+        setHistoryWarning(
+          `Issue updated, but technician notice failed: ${noticeError.message}`,
+        );
+      }
+    }
+
+    if (isResolution) {
+      await completeAdditionalTechnicianAssignments(issue.id);
+      await refreshAdditionalAssignments();
+    }
+
     setActiveAction(null);
     setNote("");
     setNoteValidation(null);
@@ -440,13 +503,41 @@ export function DirectorAttentionQueue({
     issue: AttentionIssue,
     technicianId: TemporaryTechnicianId,
   ) => {
-    setTemporaryAdditionalTechnicianAssignment(issue.id, technicianId);
+    if (!activeShow) {
+      return;
+    }
 
-    // Future technician messaging:
-    // Original: "[TECH NAME] was assigned to help, they'll be there as soon as they can."
-    // Additional: "[DIRECTOR NAME] needs you to help [ORIGINAL TECH NAME]."
+    const primaryTechnician = assignments[issue.id];
+    if (!primaryTechnician) {
+      setFeedback("Assign a primary technician before adding help.");
+      return;
+    }
+
     const technicianLabel = getTemporaryTechnicianLabel(technicianId);
-    const additionalTechnicianNote = `Additional technician ${technicianLabel} assigned to help ${getTemporaryTechnicianLabel(assignments[issue.id])}.`;
+    const primaryTechnicianLabel =
+      getTemporaryTechnicianLabel(primaryTechnician);
+    const additionalTechnicianNote = `Additional technician ${technicianLabel} assigned to help ${primaryTechnicianLabel}.`;
+    const { error: assignmentError } =
+      await createAdditionalTechnicianAssignment({
+        additionalTechnicianId: technicianId,
+        directorNote: additionalTechnicianNote,
+        issueId: issue.id,
+        primaryTechnicianId: primaryTechnician,
+        requestedNote: issue.latest_note,
+        sessionId:
+          activeSession?.show_id === activeShow.id
+            ? activeSession.id
+            : null,
+        showId: activeShow.id,
+      });
+
+    if (assignmentError) {
+      setFeedback(
+        `Could not assign additional technician: ${assignmentError.message}`,
+      );
+      return;
+    }
+
     const wasUpdated = await transitionIssue(
       issue,
       "in_progress",
@@ -455,8 +546,45 @@ export function DirectorAttentionQueue({
         : additionalTechnicianNote,
     );
 
+    if (!wasUpdated) {
+      await completeAdditionalTechnicianAssignments(issue.id);
+      await refreshAdditionalAssignments();
+      return;
+    }
+
     if (wasUpdated) {
+      const sessionId =
+        activeSession?.show_id === activeShow.id
+          ? activeSession.id
+          : null;
+      const noticeResults = await Promise.all([
+        createTechnicianNotice({
+          issueId: issue.id,
+          message: `${technicianLabel} was assigned to help you.`,
+          noticeType: "additional_help_assigned",
+          sessionId,
+          showId: activeShow.id,
+          technicianId: primaryTechnician,
+          title: "Additional Help Assigned",
+        }),
+        createTechnicianNotice({
+          issueId: issue.id,
+          message: `Help ${primaryTechnicianLabel} with this issue.`,
+          noticeType: "additional_assignment",
+          sessionId,
+          showId: activeShow.id,
+          technicianId,
+          title: "Additional Technician Assignment",
+        }),
+      ]);
+      const noticeError = noticeResults.find((result) => result.error)?.error;
+      await refreshAdditionalAssignments();
       setFeedback("Additional Tech Assigned");
+      if (noticeError) {
+        setHistoryWarning(
+          `Assignment saved, but a technician notice failed: ${noticeError.message}`,
+        );
+      }
     }
   };
 

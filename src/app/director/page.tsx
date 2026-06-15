@@ -22,7 +22,12 @@ import {
 } from "@/components/director-tech-location-map";
 import { useFieldMap } from "@/components/field-map-store";
 import { useShowPositions } from "@/components/position-store";
-import { createTemporaryHandoff } from "@/components/temporary-handoff-store";
+import {
+  completeAdditionalTechnicianAssignments,
+  createHandoffNotices,
+  createTechnicianNotice,
+  useActiveAdditionalTechnicianAssignments,
+} from "@/components/collaboration-store";
 import {
   assignIssueToTechnician,
   useActiveIssueAssignments,
@@ -37,8 +42,6 @@ import {
   setSelectedTemporaryTechnician,
   TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
-  useTemporaryAdditionalTechnicianAssignments,
-  useTemporaryAdditionalTechnicianAssignmentTimes,
 } from "@/components/temporary-technician-store";
 import {
   getHistoryReadFailureMessage,
@@ -252,10 +255,13 @@ export default function DirectorConsolePage() {
     activeShow?.id,
     sessionForActiveShow?.id,
   );
-  const additionalAssignments =
-    useTemporaryAdditionalTechnicianAssignments();
-  const additionalAssignmentTimes =
-    useTemporaryAdditionalTechnicianAssignmentTimes();
+  const {
+    assignmentsByIssue: additionalAssignments,
+    assignmentTimesByIssue: additionalAssignmentTimes,
+  } = useActiveAdditionalTechnicianAssignments(
+    activeShow?.id,
+    sessionForActiveShow?.id,
+  );
   const isScripted = activeShow?.show_mode === "scripted";
   const isManual = activeShow?.show_mode === "manual";
   const [channelNumber, setChannelNumber] = useState("");
@@ -1045,6 +1051,16 @@ export default function DirectorConsolePage() {
       return;
     }
 
+    const { error: noticeError } = await createTechnicianNotice({
+      issueId: issue.id,
+      message: `You were assigned ${formatIssueLabel(issue.issue_type)}.`,
+      noticeType: "assignment",
+      sessionId: issue.session_id ?? sessionForActiveShow?.id ?? null,
+      showId: activeShow.id,
+      technicianId,
+      title: "New Issue Assigned",
+    });
+
     const { error: historyError } = await supabase
       .from("issue_status_history")
       .insert({
@@ -1063,7 +1079,9 @@ export default function DirectorConsolePage() {
     setAssignmentWarning(
       historyError
         ? getHistoryWriteFailureMessage(historyError.message)
-        : null,
+        : noticeError
+          ? `Assignment saved, but technician notice failed: ${noticeError.message}`
+          : null,
     );
     await Promise.all([refreshIssues(), refreshAssignments()]);
     setAssigningIssueId(null);
@@ -1103,21 +1121,6 @@ export default function DirectorConsolePage() {
       return;
     }
 
-    if (issue.status !== "assigned") {
-      createTemporaryHandoff({
-        issueId: issue.id,
-        showId: activeShow.id,
-        fromTechnician: originalTechnician,
-        toTechnician: technicianId,
-        previousStatus: issue.status,
-        channelNumber: issue.channel_number,
-        cueValue: issue.cue_value,
-        issueType: issue.issue_type,
-        positionName: issue.position_name,
-        effectName: issue.effect_name,
-      });
-    }
-
     const { error: assignmentError } = await assignIssueToTechnician({
       issueId: issue.id,
       sessionId: issue.session_id ?? sessionForActiveShow?.id ?? null,
@@ -1133,6 +1136,37 @@ export default function DirectorConsolePage() {
       setReassigningIssueId(null);
       return;
     }
+
+    await completeAdditionalTechnicianAssignments(issue.id);
+
+    const { error: handoffError } =
+      issue.status !== "assigned"
+        ? await createHandoffNotices({
+            payload: {
+              channelNumber: issue.channel_number,
+              cueValue: issue.cue_value,
+              effectName: issue.effect_name,
+              fromTechnician: originalTechnician,
+              issueId: issue.id,
+              issueType: issue.issue_type,
+              positionName: issue.position_name,
+              previousStatus: issue.status,
+              toTechnician: technicianId,
+            },
+            sessionId:
+              issue.session_id ?? sessionForActiveShow?.id ?? null,
+            showId: activeShow.id,
+          })
+        : await createTechnicianNotice({
+            issueId: issue.id,
+            message: `Issue reassigned from ${getTemporaryTechnicianLabel(originalTechnician)}.`,
+            noticeType: "reassignment",
+            sessionId:
+              issue.session_id ?? sessionForActiveShow?.id ?? null,
+            showId: activeShow.id,
+            technicianId,
+            title: "Issue Reassigned",
+          });
 
     const originalLabel =
       getTemporaryTechnicianLabel(originalTechnician);
@@ -1158,7 +1192,9 @@ export default function DirectorConsolePage() {
     setAssignmentWarning(
       historyError
         ? getHistoryWriteFailureMessage(historyError.message)
-        : null,
+        : handoffError
+          ? `Reassignment saved, but handoff notice failed: ${handoffError.message}`
+          : null,
     );
     await Promise.all([refreshIssues(), refreshAssignments()]);
     setReassigningIssueId(null);
@@ -1539,12 +1575,30 @@ export default function DirectorConsolePage() {
                 Technician Join Code
               </p>
               <p className="mt-1 text-xs text-[#94a3b8]">
-                Share this code with technicians joining on mobile.
+                Reveal only when a technician is ready to join.
               </p>
             </div>
-            <p className="font-mono text-2xl font-bold tracking-[0.25em] text-white">
-              {activeShow.show_code ?? "Not assigned"}
-            </p>
+            <div className="group relative self-start sm:self-auto">
+              <button
+                aria-describedby="technician-join-code"
+                className="rounded-md border border-white/10 bg-[#0d1324] px-3 py-2 text-xs font-semibold text-[#c4b5fd] transition hover:border-[#8b5cf6]/55 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a78bfa]"
+                type="button"
+              >
+                Mouse Over For Join Code
+              </button>
+              <div
+                className="invisible absolute right-0 top-full z-30 mt-2 min-w-52 translate-y-1 rounded-lg border border-[#8b5cf6]/45 bg-[#070b18] p-4 text-center opacity-0 shadow-2xl shadow-black/70 transition duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
+                id="technician-join-code"
+                role="tooltip"
+              >
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#94a3b8]">
+                  Technician Join Code
+                </p>
+                <p className="mt-2 font-mono text-2xl font-bold tracking-[0.25em] text-white">
+                  {activeShow.show_code ?? "Not assigned"}
+                </p>
+              </div>
+            </div>
             {/* TODO: QR code will encode a technician join URL containing the show_code. */}
           </div>
         ) : null}

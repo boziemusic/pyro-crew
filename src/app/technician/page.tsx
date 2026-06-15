@@ -35,23 +35,20 @@ import {
   type IssueAssignment,
 } from "@/components/issue-assignment-store";
 import {
-  acknowledgeResolutionNotice,
-  useResolutionNoticeAcknowledgements,
-} from "@/components/resolution-notice-store";
-import {
-  acceptTemporaryHandoff,
-  acknowledgeTemporaryHandoff,
-  TEMPORARY_HANDOFF_EVENT,
-  useTemporaryHandoffs,
-  type TemporaryHandoff,
-} from "@/components/temporary-handoff-store";
+  acknowledgeTechnicianNotice,
+  fetchActiveAdditionalTechnicianAssignments,
+  parseHandoffNoticePayload,
+  type HandoffNoticePayload,
+  updateIncomingHandoffNotice,
+  useTechnicianNotices,
+} from "@/components/collaboration-store";
 import {
   getHistoryReadFailureMessage,
   getHistoryWriteFailureMessage,
 } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { TechnicianMapAssist } from "@/components/technician-map-assist";
-import { AppFeedbackControls } from "@/components/app-feedback-controls";
+import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
 import {
   playSuccess,
   playUiClick,
@@ -104,6 +101,12 @@ type MobileSection =
   | "awaiting-director"
   | "resolutions";
 
+type SharedHandoff = HandoffNoticePayload & {
+  id: string;
+  reassignedAt: string;
+  handoffNote: string | null;
+};
+
 const initialQueryDiagnostics: Record<
   TechnicianQueryName,
   TechnicianQueryDiagnostic
@@ -111,7 +114,7 @@ const initialQueryDiagnostics: Record<
   assignments: { status: "idle", error: null },
   issues: { status: "idle", error: null },
   "map assist data": { status: "idle", error: null },
-  "resolution notices": { status: "local", error: null },
+  "resolution notices": { status: "idle", error: null },
   "status history": { status: "idle", error: null },
 };
 
@@ -189,15 +192,26 @@ export default function TechnicianConsolePage() {
   const router = useRouter();
   const activeShow = useActiveShow();
   const activeSession = useActiveContinuitySession();
-  const resolutionAcknowledgements =
-    useResolutionNoticeAcknowledgements();
-  const handoffs = useTemporaryHandoffs();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const selectedTechnician = useSelectedTemporaryTechnician();
+  const {
+    error: noticesError,
+    notices,
+    refresh: refreshNotices,
+  } = useTechnicianNotices(
+    activeShow?.id,
+    activeSession && activeSession.show_id === activeShow?.id
+      ? activeSession.id
+      : null,
+    selectedTechnician,
+  );
   const [issues, setIssues] = useState<TechnicianIssue[]>([]);
   const [activeAssignments, setActiveAssignments] = useState<
     IssueAssignment[]
   >([]);
+  const [activeQueueIssueIds, setActiveQueueIssueIds] = useState<
+    Set<string>
+  >(new Set());
   const [isLoading, setIsLoading] = useState(true);
   const [updatingIssueId, setUpdatingIssueId] = useState<string | null>(null);
   const [noteIssueId, setNoteIssueId] = useState<string | null>(null);
@@ -245,11 +259,11 @@ export default function TechnicianConsolePage() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const hasSelectedMobileSection = useRef(false);
   const issueAlertSnapshot = useRef<Map<string, string> | null>(null);
-  const handoffAlertSnapshot = useRef<Set<string> | null>(null);
+  const noticeAlertSnapshot = useRef<Set<string> | null>(null);
 
   useEffect(() => {
     issueAlertSnapshot.current = null;
-    handoffAlertSnapshot.current = null;
+    noticeAlertSnapshot.current = null;
   }, [activeSession?.id, activeShow?.id, selectedTechnician]);
 
   const updateQueryDiagnostic = useCallback(
@@ -285,27 +299,96 @@ export default function TechnicianConsolePage() {
         data: [],
         error: null,
         failedQuery: null,
+        queueIssueIds: [],
       };
     }
 
-    const { data: assignmentData, error: assignmentError } =
-      await fetchActiveIssueAssignments({
+    const [
+      { data: assignmentData, error: assignmentError },
+      { data: additionalAssignmentData, error: additionalAssignmentError },
+    ] = await Promise.all([
+      fetchActiveIssueAssignments({
         sessionId: activeSession.id,
         showId: activeShow.id,
         technicianId: selectedTechnician,
-      });
+      }),
+      fetchActiveAdditionalTechnicianAssignments({
+        sessionId: activeSession.id,
+        showId: activeShow.id,
+        technicianId: selectedTechnician,
+      }),
+    ]);
 
-    if (assignmentError) {
+    if (assignmentError || additionalAssignmentError) {
       return {
         assignments: [],
         data: [],
-        error: assignmentError,
+        error: assignmentError ?? additionalAssignmentError,
         failedQuery: "assignments" as const,
+        queueIssueIds: [],
       };
     }
 
-    const assignments = (assignmentData ?? []) as IssueAssignment[];
-    const issueIds = assignments.map((assignment) => assignment.issue_id);
+    const selectedAssignments =
+      (assignmentData ?? []) as IssueAssignment[];
+    const helperIssueIds = (additionalAssignmentData ?? []).map(
+      (assignment) => assignment.issue_id as string,
+    );
+    let helperPrimaryAssignments: IssueAssignment[] = [];
+
+    if (helperIssueIds.length > 0) {
+      const { data: allAssignmentData, error: allAssignmentError } =
+        await fetchActiveIssueAssignments({
+          sessionId: activeSession.id,
+          showId: activeShow.id,
+        });
+
+      if (allAssignmentError) {
+        return {
+          assignments: [],
+          data: [],
+          error: allAssignmentError,
+          failedQuery: "assignments" as const,
+          queueIssueIds: [],
+        };
+      }
+
+      const helperIssueIdSet = new Set(helperIssueIds);
+      helperPrimaryAssignments = (
+        (allAssignmentData ?? []) as IssueAssignment[]
+      ).filter((assignment) =>
+        helperIssueIdSet.has(assignment.issue_id),
+      );
+    }
+
+    const assignments = [
+      ...selectedAssignments,
+      ...helperPrimaryAssignments.filter(
+        (helperAssignment) =>
+          !selectedAssignments.some(
+            (assignment) =>
+              assignment.issue_id === helperAssignment.issue_id,
+          ),
+      ),
+    ];
+    const noticeIssueIds = notices
+      .map((notice) => notice.issue_id)
+      .filter((issueId): issueId is string => Boolean(issueId));
+    const issueIds = [
+      ...new Set([
+        ...assignments.map((assignment) => assignment.issue_id),
+        ...helperIssueIds,
+        ...noticeIssueIds,
+      ]),
+    ];
+    const queueIssueIds = [
+      ...new Set([
+        ...selectedAssignments.map(
+          (assignment) => assignment.issue_id,
+        ),
+        ...helperIssueIds,
+      ]),
+    ];
 
     if (issueIds.length === 0) {
       return {
@@ -313,6 +396,7 @@ export default function TechnicianConsolePage() {
         data: [],
         error: null,
         failedQuery: null,
+        queueIssueIds,
       };
     }
 
@@ -331,8 +415,15 @@ export default function TechnicianConsolePage() {
       data,
       error,
       failedQuery: error ? ("issues" as const) : null,
+      queueIssueIds,
     };
-  }, [activeSession, activeShow, selectedTechnician, supabase]);
+  }, [
+    activeSession,
+    activeShow,
+    notices,
+    selectedTechnician,
+    supabase,
+  ]);
 
   const refreshLatestNotes = useCallback(
     async (issueRecords: TechnicianIssue[]) => {
@@ -455,7 +546,13 @@ export default function TechnicianConsolePage() {
         status: "loading",
         error: null,
       });
-      const { assignments, data, error, failedQuery } = await fetchIssues();
+      const {
+        assignments,
+        data,
+        error,
+        failedQuery,
+        queueIssueIds,
+      } = await fetchIssues();
 
       if (error) {
         const queryName = failedQuery ?? "issues";
@@ -471,6 +568,7 @@ export default function TechnicianConsolePage() {
       }
 
       setActiveAssignments(assignments);
+      setActiveQueueIssueIds(new Set(queueIssueIds));
       updateQueryDiagnostic("assignments", {
         status: "loaded",
         error: null,
@@ -561,20 +659,6 @@ export default function TechnicianConsolePage() {
     return () => window.clearInterval(intervalId);
   }, [refreshIssues]);
 
-  useEffect(() => {
-    const handleHandoffChange = () => {
-      void refreshIssues();
-    };
-
-    window.addEventListener(TEMPORARY_HANDOFF_EVENT, handleHandoffChange);
-
-    return () =>
-      window.removeEventListener(
-        TEMPORARY_HANDOFF_EVENT,
-        handleHandoffChange,
-      );
-  }, [refreshIssues]);
-
   const assignmentTimes = useMemo(
     () =>
       Object.fromEntries(
@@ -586,7 +670,11 @@ export default function TechnicianConsolePage() {
     [activeAssignments],
   );
 
-  const assignedIssues = issues;
+  const assignedIssues = useMemo(
+    () =>
+      issues.filter((issue) => activeQueueIssueIds.has(issue.id)),
+    [activeQueueIssueIds, issues],
+  );
 
   const isDirectorReturnedRetrievingParts = useCallback(
     (issue: TechnicianIssue) => {
@@ -691,20 +779,19 @@ export default function TechnicianConsolePage() {
   );
 
   const resolutionNotices = useMemo(() => {
-    const acknowledgedIssueIds = new Set(
-      resolutionAcknowledgements[selectedTechnician],
+    const resolutionIssueIds = new Set(
+      notices
+        .filter((notice) => notice.notice_type === "resolution")
+        .map((notice) => notice.issue_id)
+        .filter((issueId): issueId is string => Boolean(issueId)),
     );
 
-    return assignedIssues.filter(
+    return issues.filter(
       (issue) =>
         resolutionStatuses.has(issue.status) &&
-        !acknowledgedIssueIds.has(issue.id),
+        resolutionIssueIds.has(issue.id),
     );
-  }, [
-    assignedIssues,
-    resolutionAcknowledgements,
-    selectedTechnician,
-  ]);
+  }, [issues, notices]);
 
   useEffect(() => {
     if (isLoading || hasSelectedMobileSection.current) {
@@ -754,42 +841,75 @@ export default function TechnicianConsolePage() {
 
   const outgoingHandoffNotices = useMemo(
     () =>
-      handoffs.filter(
-        (handoff) =>
-          handoff.fromTechnician === selectedTechnician &&
-          !handoff.outgoingAcknowledged,
-      ),
-    [handoffs, selectedTechnician],
+      notices.flatMap((notice) => {
+        if (notice.notice_type !== "handoff_outgoing") {
+          return [];
+        }
+
+        const payload = parseHandoffNoticePayload(notice.message);
+        return payload
+          ? [{
+              ...payload,
+              handoffNote: payload.handoffNote ?? null,
+              id: notice.id,
+              reassignedAt: notice.created_at,
+            }]
+          : [];
+      }),
+    [notices],
   );
 
   const incomingHandoffNotices = useMemo(
     () =>
-      handoffs.filter(
-        (handoff) =>
-          handoff.toTechnician === selectedTechnician &&
-          !handoff.incomingAccepted,
-      ),
-    [handoffs, selectedTechnician],
+      notices.flatMap((notice) => {
+        if (notice.notice_type !== "handoff_incoming") {
+          return [];
+        }
+
+        const payload = parseHandoffNoticePayload(notice.message);
+        return payload
+          ? [{
+              ...payload,
+              handoffNote: payload.handoffNote ?? null,
+              id: notice.id,
+              reassignedAt: notice.created_at,
+            }]
+          : [];
+      }),
+    [notices],
   );
 
   useEffect(() => {
-    const nextSnapshot = new Set(
-      incomingHandoffNotices.map((handoff) => handoff.id),
-    );
-    const previousSnapshot = handoffAlertSnapshot.current;
+    const nextSnapshot = new Set(notices.map((notice) => notice.id));
+    const previousSnapshot = noticeAlertSnapshot.current;
 
     if (
       previousSnapshot &&
-      incomingHandoffNotices.some(
-        (handoff) => !previousSnapshot.has(handoff.id),
-      )
+      notices.some((notice) => !previousSnapshot.has(notice.id))
     ) {
       playWarning();
       vibrate([120, 60, 120]);
     }
 
-    handoffAlertSnapshot.current = nextSnapshot;
-  }, [incomingHandoffNotices]);
+    noticeAlertSnapshot.current = nextSnapshot;
+  }, [notices]);
+
+  useEffect(() => {
+    const updateId = window.setTimeout(() => {
+      updateQueryDiagnostic("resolution notices", {
+        status: noticesError ? "error" : "loaded",
+        error: noticesError,
+      });
+      if (noticesError) {
+        setFeedback({
+          type: "error",
+          message: `Could not load technician notices: ${noticesError}`,
+        });
+      }
+    }, 0);
+
+    return () => window.clearTimeout(updateId);
+  }, [noticesError, updateQueryDiagnostic]);
 
   const acknowledgeActiveWork = async (issueId: string) => {
     const acknowledgedAt = new Date().toISOString();
@@ -939,9 +1059,44 @@ export default function TechnicianConsolePage() {
     setUpdatingIssueId(null);
   };
 
-  const acknowledgeHandoff = async (handoff: TemporaryHandoff) => {
+  const acknowledgeHandoff = async (handoff: SharedHandoff) => {
     const note = handoffNotes[handoff.id]?.trim() ?? "";
-    acknowledgeTemporaryHandoff(handoff.id, note || null);
+    const updatedPayload: HandoffNoticePayload = {
+      channelNumber: handoff.channelNumber,
+      cueValue: handoff.cueValue,
+      effectName: handoff.effectName,
+      fromTechnician: handoff.fromTechnician,
+      handoffNote: note || null,
+      issueId: handoff.issueId,
+      issueType: handoff.issueType,
+      positionName: handoff.positionName,
+      previousStatus: handoff.previousStatus,
+      toTechnician: handoff.toTechnician,
+    };
+    const { error: noticeError } = await acknowledgeTechnicianNotice(
+      handoff.id,
+      JSON.stringify(updatedPayload),
+    );
+    if (noticeError) {
+      setFeedback({
+        type: "error",
+        message: `Could not acknowledge handoff: ${noticeError.message}`,
+      });
+      return;
+    }
+    const { error: incomingNoticeError } =
+      await updateIncomingHandoffNotice({
+        issueId: handoff.issueId,
+        message: JSON.stringify(updatedPayload),
+        technicianId: handoff.toTechnician,
+      });
+    if (incomingNoticeError) {
+      setFeedback({
+        type: "error",
+        message: `Handoff acknowledged, but note delivery failed: ${incomingNoticeError.message}`,
+      });
+    }
+    await refreshNotices();
     setHandoffNotes((currentNotes) => {
       const nextNotes = { ...currentNotes };
       delete nextNotes[handoff.id];
@@ -974,8 +1129,17 @@ export default function TechnicianConsolePage() {
     );
   };
 
-  const acceptHandoff = async (handoff: TemporaryHandoff) => {
-    acceptTemporaryHandoff(handoff.id);
+  const acceptHandoff = async (handoff: SharedHandoff) => {
+    const { error: noticeError } =
+      await acknowledgeTechnicianNotice(handoff.id);
+    if (noticeError) {
+      setFeedback({
+        type: "error",
+        message: `Could not accept handoff: ${noticeError.message}`,
+      });
+      return;
+    }
+    await refreshNotices();
     setFeedback({
       type: "success",
       message: "Handoff accepted.",
@@ -1249,9 +1413,30 @@ export default function TechnicianConsolePage() {
         </div>
         <button
           className="min-h-12 touch-manipulation rounded-md border border-[#8b5cf6]/45 bg-[#1b1235] px-4 py-3 text-sm font-semibold text-[#d8c8ff] transition active:border-[#a78bfa] md:min-h-0 md:px-3 md:py-2 md:text-xs md:hover:border-[#a78bfa]"
-          onClick={() =>
-            acknowledgeResolutionNotice(selectedTechnician, issue.id)
-          }
+          onClick={() => {
+            const matchingNotices = notices.filter(
+              (notice) =>
+                notice.notice_type === "resolution" &&
+                notice.issue_id === issue.id,
+            );
+            void Promise.all(
+              matchingNotices.map((notice) =>
+                acknowledgeTechnicianNotice(notice.id),
+              ),
+            ).then(async (results) => {
+              const noticeError = results.find(
+                (result) => result.error,
+              )?.error;
+              if (noticeError) {
+                setFeedback({
+                  type: "error",
+                  message: `Could not acknowledge resolution: ${noticeError.message}`,
+                });
+                return;
+              }
+              await refreshNotices();
+            });
+          }}
           type="button"
         >
           Acknowledge & Remove
@@ -1276,7 +1461,9 @@ export default function TechnicianConsolePage() {
             {getTemporaryTechnicianLabel(selectedTechnician)}
           </p>
         </div>
-        <div className="relative shrink-0">
+        <div className="flex shrink-0 items-center gap-2">
+          <MobileTechnicianAlertToggle />
+          <div className="relative">
           <button
             aria-expanded={isMobileMenuOpen}
             aria-label="Open technician menu"
@@ -1321,9 +1508,9 @@ export default function TechnicianConsolePage() {
               >
                 Clear Active Show
               </button>
-              <AppFeedbackControls mobile />
             </div>
           ) : null}
+          </div>
         </div>
       </header>
 

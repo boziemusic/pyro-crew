@@ -27,9 +27,6 @@ import {
   type ActiveContinuitySession,
   useActiveContinuitySession,
 } from "@/components/active-continuity-session";
-import { removeResolutionNoticeAcknowledgements } from "@/components/resolution-notice-store";
-import { removeTemporaryHandoffsForShow } from "@/components/temporary-handoff-store";
-import { removeTemporaryTechnicianData } from "@/components/temporary-technician-store";
 import {
   setSelectedTemporaryTechnician,
   TEMPORARY_TECHNICIANS,
@@ -79,15 +76,6 @@ type ScriptEventPreview = {
   count: number;
   rows: ScriptEventRow[];
 };
-
-type TechnicianJoinStatus =
-  | "idle"
-  | "looking_up_show"
-  | "checking_session"
-  | "no_match"
-  | "no_active_session"
-  | "error"
-  | "joined";
 
 const fieldClassName =
   "rounded-lg border border-[#334155] bg-[#020617] px-3 py-3 text-base font-semibold text-white placeholder:text-[#94a3b8] focus:border-[#8b5cf6] focus:outline-none focus:ring-2 focus:ring-[#4c00a4]/60";
@@ -157,8 +145,6 @@ export function ShowsWorkspace() {
         <div className="md:hidden">
           <MobileTechnicianEntry
             isEntering={false}
-            joinStatus="error"
-            lastError="Supabase is not configured on this device/session."
             message={null}
             onContinue={() => undefined}
             onSelectTechnician={() => undefined}
@@ -189,11 +175,6 @@ function ConfiguredShowsWorkspace() {
   );
   const activeSession = useActiveContinuitySession();
   const selectedTechnician = useSelectedTemporaryTechnician();
-  const [mobileJoinStatus, setMobileJoinStatus] =
-    useState<TechnicianJoinStatus>("idle");
-  const [mobileJoinLastError, setMobileJoinLastError] = useState<string | null>(
-    null,
-  );
   const [isEnteringTechnicianConsole, setIsEnteringTechnicianConsole] =
     useState(false);
   const [mobileEntryMessage, setMobileEntryMessage] = useState<string | null>(
@@ -864,11 +845,8 @@ function ConfiguredShowsWorkspace() {
       return;
     }
 
-    // position_groups, positions, and field_map_markers use ON DELETE CASCADE.
+    // Shared positions, maps, assignments, and notices use ON DELETE CASCADE.
     // TODO(field map storage): safely remove the show's Storage object after deletion.
-    removeTemporaryTechnicianData(issueIds);
-    removeTemporaryHandoffsForShow(show.id);
-    removeResolutionNoticeAcknowledgements(issueIds);
 
     if (activeShow?.id === show.id) {
       setActiveShow(null);
@@ -969,22 +947,16 @@ function ConfiguredShowsWorkspace() {
 
     if (!/^[A-Z0-9]{4}$/.test(normalizedShowCode)) {
       setMobileEntryMessage("Enter a 4-character show code.");
-      setMobileJoinStatus("error");
-      setMobileJoinLastError("Show code validation failed.");
       return;
     }
 
     if (!hasSelectedTechnician) {
       setMobileEntryMessage("Select a technician identity.");
-      setMobileJoinStatus("error");
-      setMobileJoinLastError("Technician identity validation failed.");
       return;
     }
 
     setIsEnteringTechnicianConsole(true);
     setMobileEntryMessage(null);
-    setMobileJoinLastError(null);
-    setMobileJoinStatus("looking_up_show");
     setSelectedTemporaryTechnician(selectedTechnician);
 
     try {
@@ -999,21 +971,16 @@ function ConfiguredShowsWorkspace() {
       if (showError) {
         const errorMessage = `Could not look up show: ${showError.message}`;
         setMobileEntryMessage(errorMessage);
-        setMobileJoinStatus("error");
-        setMobileJoinLastError(showError.message);
         return;
       }
 
       if (!matchedShow) {
         setMobileEntryMessage("No show found for that code.");
-        setMobileJoinStatus("no_match");
-        setMobileJoinLastError("No show matched the normalized code.");
         return;
       }
 
       const show = matchedShow as ShowRecord;
       activateShow(show);
-      setMobileJoinStatus("checking_session");
 
       const { data: session, error: sessionError } = await supabase
         .from("continuity_sessions")
@@ -1030,8 +997,6 @@ function ConfiguredShowsWorkspace() {
         setMobileEntryMessage(
           `Could not check the active continuity session: ${sessionError.message}`,
         );
-        setMobileJoinStatus("error");
-        setMobileJoinLastError(sessionError.message);
         return;
       }
 
@@ -1040,21 +1005,16 @@ function ConfiguredShowsWorkspace() {
         setMobileEntryMessage(
           "Show found, but no active continuity session. Ask the Director to start one.",
         );
-        setMobileJoinStatus("no_active_session");
-        setMobileJoinLastError("No active continuity session was found.");
         return;
       }
 
       setActiveContinuitySession(session as ActiveContinuitySession);
       setSelectedTemporaryTechnician(selectedTechnician);
-      setMobileJoinStatus("joined");
       router.push("/technician");
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown join error.";
       setMobileEntryMessage(`Could not join show: ${errorMessage}`);
-      setMobileJoinStatus("error");
-      setMobileJoinLastError(errorMessage);
     } finally {
       setIsEnteringTechnicianConsole(false);
     }
@@ -1065,8 +1025,6 @@ function ConfiguredShowsWorkspace() {
       <div className="md:hidden">
       <MobileTechnicianEntry
         isEntering={isEnteringTechnicianConsole}
-        joinStatus={mobileJoinStatus}
-        lastError={mobileJoinLastError}
         message={mobileEntryMessage}
         onContinue={(showCode) =>
           void continueToTechnicianConsole(showCode)
@@ -1074,8 +1032,6 @@ function ConfiguredShowsWorkspace() {
         onSelectTechnician={(technicianId) => {
           setSelectedTemporaryTechnician(technicianId);
           setMobileEntryMessage(null);
-          setMobileJoinLastError(null);
-          setMobileJoinStatus("idle");
         }}
         selectedTechnician={selectedTechnician}
         supabaseConfigured={isSupabaseConfigured}
@@ -1763,8 +1719,6 @@ function ConfiguredShowsWorkspace() {
 
 function MobileTechnicianEntry({
   isEntering,
-  joinStatus,
-  lastError,
   message,
   onContinue,
   onSelectTechnician,
@@ -1772,8 +1726,6 @@ function MobileTechnicianEntry({
   supabaseConfigured,
 }: {
   isEntering: boolean;
-  joinStatus: TechnicianJoinStatus;
-  lastError: string | null;
   message: string | null;
   onContinue: (showCode: string) => void;
   onSelectTechnician: (technicianId: TemporaryTechnicianId) => void;
@@ -1832,22 +1784,6 @@ function MobileTechnicianEntry({
           type="text"
           value={joinCode}
         />
-        <p
-          aria-live="polite"
-          className="mt-2 font-mono text-sm font-bold text-[#c4b5fd]"
-        >
-          LIVE INPUT STATE: {joinCode || "(empty)"}
-        </p>
-        <div
-          aria-live="polite"
-          className="mt-3 rounded-lg border border-white/10 bg-[#050816] p-3 font-mono text-xs leading-5 text-[#94a3b8]"
-        >
-          <p>Raw joinCode: {joinCode || "(empty)"}</p>
-          <p>
-            Normalized joinCode: {normalizedJoinCode || "(empty)"}
-          </p>
-          <p>Button enabled: {isJoinEnabled ? "yes" : "no"}</p>
-        </div>
         <p className="mt-2 text-xs leading-5 text-[#94a3b8]">
           Ask the Director for the four-character Technician Join Code.
         </p>
@@ -1886,20 +1822,6 @@ function MobileTechnicianEntry({
           {message}
         </p>
       ) : null}
-
-      <div className="rounded-xl border border-white/10 bg-[#050816] p-4 text-xs leading-5 text-[#94a3b8]">
-        <p className="font-bold uppercase tracking-[0.12em] text-[#cbd5e1]">
-          Join diagnostics
-        </p>
-        <p>
-          Normalized code: {normalizedJoinCode || "(empty)"}
-        </p>
-        <p>Button enabled: {isJoinEnabled ? "yes" : "no"}</p>
-        <p>Join status: {joinStatus}</p>
-        <p className="break-words">
-          Last error: {lastError ?? "none"}
-        </p>
-      </div>
 
       <button
         className="min-h-14 touch-manipulation rounded-xl bg-[#6d28d9] px-5 py-4 text-lg font-bold text-white shadow-xl shadow-[#4c00a4]/30 transition active:scale-[0.99] active:bg-[#7c3aed] disabled:cursor-not-allowed disabled:opacity-50"
