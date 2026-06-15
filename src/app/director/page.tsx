@@ -16,6 +16,11 @@ import {
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import { DirectorAttentionQueue } from "@/components/director-attention-queue";
+import {
+  DirectorTechLocationMap,
+  type TechnicianMapLocation,
+} from "@/components/director-tech-location-map";
+import { useFieldMap } from "@/components/field-map-store";
 import { useShowPositions } from "@/components/position-store";
 import { createTemporaryHandoff } from "@/components/temporary-handoff-store";
 import {
@@ -44,6 +49,11 @@ import {
   findScriptEvent,
   type ScriptEventRow,
 } from "@/lib/script-events";
+import {
+  playSuccess,
+  playUiClick,
+  playWarning,
+} from "@/lib/app-feedback";
 
 const fieldClassName =
   "rounded-lg border border-[#334155] bg-[#020617] px-3 py-3 text-base font-semibold text-white placeholder:text-[#94a3b8] focus:border-[#8b5cf6] focus:outline-none focus:ring-2 focus:ring-[#4c00a4]/60";
@@ -71,6 +81,12 @@ type IssueHistoryNote = {
   new_status: string;
   note: string | null;
   created_at: string | null;
+};
+
+type IssueAssignmentHistory = {
+  issue_id: string;
+  technician_name: string;
+  assigned_at: string;
 };
 
 type SessionSummaryHistory = {
@@ -149,6 +165,13 @@ const attentionStatuses = new Set([
   "additional_technician_requested",
 ]);
 
+const overviewAttentionStatuses = new Set([
+  "awaiting_verification",
+  "director_assistance_requested",
+  "additional_technician_requested",
+  "unfixable_recommended",
+]);
+
 const resolvedStatuses = new Set(["verified_resolved", "closed"]);
 
 function getTimestampValue(value: string | null | undefined) {
@@ -214,11 +237,13 @@ function formatElapsedTime(startedAt: string | null, now: number | null) {
 export default function DirectorConsolePage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const activeShow = useActiveShow();
+  const fieldMap = useFieldMap(activeShow?.id);
   const showPositions = useShowPositions(activeShow?.id);
   const activeSession = useActiveContinuitySession();
   const sessionForActiveShow =
     activeSession?.show_id === activeShow?.id ? activeSession : null;
   const {
+    assignments: activeIssueAssignments,
     assignmentsByIssue: technicianAssignments,
     assignmentTimesByIssue: technicianAssignmentTimes,
     error: assignmentLoadError,
@@ -257,6 +282,12 @@ export default function DirectorConsolePage() {
   const [currentStatusEnteredAt, setCurrentStatusEnteredAt] = useState<
     Record<string, string>
   >({});
+  const [latestIssueActionAt, setLatestIssueActionAt] = useState<
+    Record<string, string>
+  >({});
+  const [issueAssignmentHistory, setIssueAssignmentHistory] = useState<
+    IssueAssignmentHistory[]
+  >([]);
   const [expandedStatuses, setExpandedStatuses] = useState<Set<string>>(
     new Set(),
   );
@@ -274,6 +305,8 @@ export default function DirectorConsolePage() {
     null,
   );
   const [timerNow, setTimerNow] = useState<number | null>(null);
+  const [isTechLocationMapOpen, setIsTechLocationMapOpen] =
+    useState(false);
   const [endSessionStep, setEndSessionStep] = useState<
     "confirm" | "summary" | null
   >(null);
@@ -398,6 +431,7 @@ export default function DirectorConsolePage() {
       if (issueRecords.length === 0) {
         setLatestIssueNotes({});
         setCurrentStatusEnteredAt({});
+        setLatestIssueActionAt({});
         return;
       }
 
@@ -420,8 +454,13 @@ export default function DirectorConsolePage() {
       );
       const notes: Record<string, string> = {};
       const statusEnteredAt: Record<string, string> = {};
+      const actionAt: Record<string, string> = {};
 
       for (const history of (data ?? []) as IssueHistoryNote[]) {
+        if (history.created_at && !actionAt[history.issue_id]) {
+          actionAt[history.issue_id] = history.created_at;
+        }
+
         if (history.note?.trim() && !notes[history.issue_id]) {
           notes[history.issue_id] = history.note;
         }
@@ -437,6 +476,7 @@ export default function DirectorConsolePage() {
 
       setLatestIssueNotes(notes);
       setCurrentStatusEnteredAt(statusEnteredAt);
+      setLatestIssueActionAt(actionAt);
     },
     [supabase],
   );
@@ -454,6 +494,32 @@ export default function DirectorConsolePage() {
     setIssues(nextIssues);
     await refreshLatestNotes(nextIssues);
   }, [fetchIssues, refreshLatestNotes]);
+
+  const refreshIssueAssignmentHistory = useCallback(async () => {
+    if (!activeShow) {
+      setIssueAssignmentHistory([]);
+      return;
+    }
+
+    let query = supabase
+      .from("issue_assignments")
+      .select("issue_id, technician_name, assigned_at")
+      .eq("show_id", activeShow.id);
+
+    query = sessionForActiveShow
+      ? query.eq("session_id", sessionForActiveShow.id)
+      : query.is("session_id", null);
+
+    const { data, error } = await query.order("assigned_at", {
+      ascending: false,
+    });
+
+    if (!error) {
+      setIssueAssignmentHistory(
+        (data ?? []) as IssueAssignmentHistory[],
+      );
+    }
+  }, [activeShow, sessionForActiveShow, supabase]);
 
   useEffect(() => {
     const loadInitialIssues = async () => {
@@ -473,15 +539,25 @@ export default function DirectorConsolePage() {
     };
 
     void loadInitialIssues();
-  }, [fetchIssues, refreshLatestNotes]);
+    const assignmentHistoryLoadId = window.setTimeout(() => {
+      void refreshIssueAssignmentHistory();
+    }, 0);
+
+    return () => window.clearTimeout(assignmentHistoryLoadId);
+  }, [
+    fetchIssues,
+    refreshIssueAssignmentHistory,
+    refreshLatestNotes,
+  ]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       void refreshIssues();
+      void refreshIssueAssignmentHistory();
     }, 5000);
 
     return () => window.clearInterval(intervalId);
-  }, [refreshIssues]);
+  }, [refreshIssueAssignmentHistory, refreshIssues]);
 
   const statusGroups = useMemo(() => {
     const groups = new Map<string, IssueRecord[]>();
@@ -567,15 +643,43 @@ export default function DirectorConsolePage() {
       null
     : issues.find((issue) => issue.session_id === null) ?? null;
 
+  const latestHistoricalTechnicianByIssue = useMemo(() => {
+    const assignments = new Map<string, string>();
+
+    issueAssignmentHistory.forEach((assignment) => {
+      if (!assignments.has(assignment.issue_id)) {
+        assignments.set(
+          assignment.issue_id,
+          assignment.technician_name,
+        );
+      }
+    });
+
+    return assignments;
+  }, [issueAssignmentHistory]);
+
   const technicianOverview = useMemo(
     () =>
       TEMPORARY_TECHNICIANS.map((technician) => {
-        const activeIssues = issues
+        const assignmentsForTechnician = activeIssueAssignments.filter(
+          (assignment) => assignment.technician_name === technician.id,
+        );
+        const assignmentByIssue = new Map(
+          assignmentsForTechnician.map((assignment) => [
+            assignment.issue_id,
+            assignment,
+          ]),
+        );
+        const technicianIssues = issues.filter(
+          (issue) =>
+            technicianAssignments[issue.id] === technician.id ||
+            additionalAssignments[issue.id] === technician.id ||
+            latestHistoricalTechnicianByIssue.get(issue.id) ===
+              technician.id,
+        );
+        const activeIssues = technicianIssues
           .filter(
-            (issue) =>
-              !terminalStatuses.has(issue.status) &&
-              (technicianAssignments[issue.id] === technician.id ||
-                additionalAssignments[issue.id] === technician.id),
+            (issue) => !terminalStatuses.has(issue.status),
           )
           .map((issue) => {
             const isPrimary =
@@ -583,13 +687,20 @@ export default function DirectorConsolePage() {
             const assignedAt = isPrimary
               ? technicianAssignmentTimes[issue.id]
               : additionalAssignmentTimes[issue.id];
+            const assignment = assignmentByIssue.get(issue.id);
 
             return {
               issue,
-              assignedAt:
-                issue.status === "in_progress"
-                  ? issue.updated_at ?? assignedAt ?? issue.created_at
-                  : assignedAt ?? issue.updated_at ?? issue.created_at,
+                assignedAt:
+                  issue.status === "in_progress"
+                    ? currentStatusEnteredAt[issue.id] ??
+                      issue.updated_at ??
+                      assignedAt ??
+                      issue.created_at
+                    : issue.status === "retrieving_parts" &&
+                        assignment?.acknowledged_at
+                      ? assignment.acknowledged_at
+                      : assignedAt ?? issue.updated_at ?? issue.created_at,
             };
           })
           .sort((left, right) => {
@@ -604,8 +715,31 @@ export default function DirectorConsolePage() {
           });
 
         const workingIssues = activeIssues.filter(
-          ({ issue }) => issue.status === "in_progress",
-        );
+          ({ issue }) => {
+            const assignment = assignmentByIssue.get(issue.id);
+
+            return (
+              issue.status === "in_progress" ||
+              (issue.status === "retrieving_parts" &&
+                Boolean(assignment?.acknowledged_at))
+            );
+          },
+        ).sort((left, right) => {
+          const leftAssignment = assignmentByIssue.get(left.issue.id);
+          const rightAssignment = assignmentByIssue.get(right.issue.id);
+          const leftTime =
+            leftAssignment?.acknowledged_at ??
+            currentStatusEnteredAt[left.issue.id] ??
+            left.issue.updated_at ??
+            left.assignedAt;
+          const rightTime =
+            rightAssignment?.acknowledged_at ??
+            currentStatusEnteredAt[right.issue.id] ??
+            right.issue.updated_at ??
+            right.assignedAt;
+
+          return getTimestampValue(rightTime) - getTimestampValue(leftTime);
+        });
         const resolvedCount = issues.filter(
           (issue) =>
             issue.session_id === sessionForActiveShow?.id &&
@@ -613,11 +747,110 @@ export default function DirectorConsolePage() {
             (technicianAssignments[issue.id] === technician.id ||
               additionalAssignments[issue.id] === technician.id),
         ).length;
+        const workingLocationIssue =
+          workingIssues.find(({ issue }) =>
+            Boolean(issue.position_name?.trim()),
+          ) ?? null;
+        const awaitingDirectorLocationIssue =
+          activeIssues
+            .filter(
+              ({ issue }) => overviewAttentionStatuses.has(issue.status),
+            )
+            .sort(
+              (left, right) =>
+                getTimestampValue(
+                  latestIssueActionAt[right.issue.id] ??
+                    right.issue.updated_at ??
+                    right.assignedAt,
+                ) -
+                getTimestampValue(
+                  latestIssueActionAt[left.issue.id] ??
+                    left.issue.updated_at ??
+                    left.assignedAt,
+                ),
+            )[0] ?? null;
+        const assignedLocationIssue =
+          activeIssues.find(({ issue }) => {
+            const assignment = assignmentByIssue.get(issue.id);
+
+            return (
+              Boolean(issue.position_name?.trim()) &&
+              (issue.status === "assigned" ||
+                (issue.status === "retrieving_parts" &&
+                  !assignment?.acknowledged_at))
+            );
+          }) ?? null;
+        const lastKnownIssue =
+          technicianIssues
+            .filter((issue) => Boolean(issue.position_name?.trim()))
+            .sort(
+              (left, right) =>
+                getTimestampValue(
+                  latestIssueActionAt[right.id] ??
+                    right.updated_at ??
+                    technicianAssignmentTimes[right.id] ??
+                    right.created_at,
+                ) -
+                getTimestampValue(
+                  latestIssueActionAt[left.id] ??
+                    left.updated_at ??
+                    technicianAssignmentTimes[left.id] ??
+                    left.created_at,
+                ),
+            )[0] ?? null;
+        const locationIssue =
+          workingLocationIssue ??
+          awaitingDirectorLocationIssue ??
+          assignedLocationIssue ??
+          lastKnownIssue;
+        const locationSource:
+          | "working"
+          | "awaiting-director"
+          | "assigned"
+          | "last-known"
+          | "none" = workingLocationIssue
+          ? "working"
+          : awaitingDirectorLocationIssue
+            ? "awaiting-director"
+            : assignedLocationIssue
+              ? "assigned"
+              : lastKnownIssue
+                ? "last-known"
+                : "none";
+        const awaitingDirectorCount = activeIssues.filter(({ issue }) =>
+          overviewAttentionStatuses.has(issue.status),
+        ).length;
 
         return {
           ...technician,
           activeIssues,
+          hasAttention: activeIssues.some(({ issue }) =>
+            overviewAttentionStatuses.has(issue.status),
+          ),
           currentIssue: workingIssues[0] ?? null,
+          locationIssue: locationIssue
+            ? "issue" in locationIssue
+              ? locationIssue.issue
+              : locationIssue
+            : null,
+          locationActivityAt: workingLocationIssue
+            ? workingLocationIssue.assignedAt
+            : awaitingDirectorLocationIssue
+              ? latestIssueActionAt[
+                  awaitingDirectorLocationIssue.issue.id
+                ] ??
+                awaitingDirectorLocationIssue.issue.updated_at ??
+                awaitingDirectorLocationIssue.assignedAt
+              : assignedLocationIssue
+                ? assignedLocationIssue.assignedAt
+                : lastKnownIssue
+                  ? latestIssueActionAt[lastKnownIssue.id] ??
+                    lastKnownIssue.updated_at ??
+                    technicianAssignmentTimes[lastKnownIssue.id] ??
+                    lastKnownIssue.created_at
+                  : null,
+          locationSource,
+          awaitingDirectorCount,
           resolvedCount,
           workingCount: workingIssues.length,
           queueCount: activeIssues.filter(
@@ -626,14 +859,133 @@ export default function DirectorConsolePage() {
         };
       }),
     [
+      activeIssueAssignments,
       additionalAssignmentTimes,
       additionalAssignments,
+      currentStatusEnteredAt,
       issues,
+      latestHistoricalTechnicianByIssue,
+      latestIssueActionAt,
       sessionForActiveShow?.id,
       technicianAssignmentTimes,
       technicianAssignments,
     ],
   );
+  const technicianMapLocations = useMemo<TechnicianMapLocation[]>(
+    () =>
+      technicianOverview.map((technician, index) => ({
+        activityStartedAt: technician.locationActivityAt,
+        channelNumber:
+          technician.locationIssue?.channel_number ?? null,
+        cueValue: technician.locationIssue?.cue_value ?? null,
+        id: technician.id,
+        issueType: technician.locationIssue?.issue_type ?? null,
+        label: technician.label,
+        positionName: technician.locationIssue?.position_name ?? null,
+        resolvedCount: technician.resolvedCount,
+        shortLabel: `T${index + 1}`,
+        status:
+          technician.locationSource === "none"
+            ? "ready"
+            : technician.locationSource,
+      })),
+    [technicianOverview],
+  );
+  const assignmentSuggestions = useMemo(() => {
+    const resolveMarker = (positionName: string | null) => {
+      if (!positionName) {
+        return null;
+      }
+
+      const normalizedName = positionName.trim().toLocaleLowerCase();
+      const position = showPositions.positions.find(
+        (candidate) =>
+          candidate.name.trim().toLocaleLowerCase() === normalizedName,
+      );
+      const directMarker = fieldMap.markers.find(
+        (marker) =>
+          marker.entityType === "position" &&
+          marker.markerName.trim().toLocaleLowerCase() ===
+            (position?.name.trim().toLocaleLowerCase() ??
+              normalizedName),
+      );
+
+      if (directMarker) {
+        return directMarker;
+      }
+
+      const group = position?.groupId
+        ? showPositions.groups.find(
+            (candidate) => candidate.id === position.groupId,
+          )
+        : showPositions.groups.find(
+            (candidate) =>
+              candidate.name.trim().toLocaleLowerCase() ===
+              normalizedName,
+          );
+
+      return group
+        ? fieldMap.markers.find(
+            (marker) =>
+              marker.entityType === "group" &&
+              marker.markerName.trim().toLocaleLowerCase() ===
+                group.name.trim().toLocaleLowerCase(),
+          ) ?? null
+        : null;
+    };
+    const suggestions = new Map<string, string>();
+
+    issues
+      .filter((issue) => issue.status === "new")
+      .forEach((issue) => {
+        const issueMarker = resolveMarker(issue.position_name);
+        const scoredTechnicians = technicianOverview.map((technician) => {
+          const workloadScore =
+            technician.workingCount * 3 +
+            technician.queueCount * 2 +
+            technician.awaitingDirectorCount * 0.5;
+          const technicianMarker = resolveMarker(
+            technician.locationIssue?.position_name ?? null,
+          );
+          let proximityScore = 0;
+
+          if (issue.position_name) {
+            proximityScore =
+              issueMarker && technicianMarker
+                ? Math.hypot(
+                    issueMarker.x - technicianMarker.x,
+                    issueMarker.y - technicianMarker.y,
+                  )
+                : 60;
+          }
+
+          return {
+            label: technician.label,
+            score: workloadScore * 100 + proximityScore,
+          };
+        });
+        scoredTechnicians.sort(
+          (left, right) =>
+            left.score - right.score ||
+            left.label.localeCompare(right.label),
+        );
+        suggestions.set(
+          issue.id,
+          scoredTechnicians[0]?.label ??
+            "No recommendation available",
+        );
+      });
+
+    // TODO(zone/team assignments): explicit zone and team ownership will
+    // eventually take precedence over general workload and field proximity.
+    return suggestions;
+  }, [
+    fieldMap.markers,
+    issues,
+    showPositions.groups,
+    showPositions.positions,
+    technicianOverview,
+  ]);
 
   const toggleStatus = (status: string) => {
     setExpandedStatuses((current) => {
@@ -657,6 +1009,7 @@ export default function DirectorConsolePage() {
       return;
     }
 
+    playUiClick();
     setAssigningIssueId(issue.id);
     setAssignmentFeedback(null);
     setAssignmentWarning(null);
@@ -706,6 +1059,7 @@ export default function DirectorConsolePage() {
       type: "success",
       message: `${getTemporaryTechnicianLabel(technicianId)} assigned. Issue moved to In Queue.`,
     });
+    playSuccess();
     setAssignmentWarning(
       historyError
         ? getHistoryWriteFailureMessage(historyError.message)
@@ -729,6 +1083,7 @@ export default function DirectorConsolePage() {
       return;
     }
 
+    playUiClick();
     setReassigningIssueId(issue.id);
     setAssignmentFeedback(null);
     setAssignmentWarning(null);
@@ -799,6 +1154,7 @@ export default function DirectorConsolePage() {
       type: "success",
       message: `${newLabel} assigned. Issue moved to In Queue.`,
     });
+    playSuccess();
     setAssignmentWarning(
       historyError
         ? getHistoryWriteFailureMessage(historyError.message)
@@ -1161,6 +1517,7 @@ export default function DirectorConsolePage() {
                 <button
                   className="rounded-md border border-[#ef4444]/45 bg-[#2a0b13] px-3 py-2 text-xs font-semibold text-[#fecaca]"
                   onClick={() => {
+                    playWarning();
                     setSessionMessage(null);
                     setEndSessionStep("confirm");
                   }}
@@ -1195,6 +1552,7 @@ export default function DirectorConsolePage() {
           {technicianOverview.map((technician) => (
             <TechOverviewCard
               currentIssue={technician.currentIssue}
+              hasAttention={technician.hasAttention}
               key={technician.id}
               loadCount={technician.activeIssues.length}
               now={timerNow}
@@ -1206,6 +1564,15 @@ export default function DirectorConsolePage() {
             />
           ))}
         </div>
+        {activeShow ? (
+          <button
+            className="mt-3 text-xs font-semibold text-[#c4b5fd] underline decoration-[#8b5cf6]/50 underline-offset-4 transition hover:text-white"
+            onClick={() => setIsTechLocationMapOpen(true)}
+            type="button"
+          >
+            View Tech Location Map
+          </button>
+        ) : null}
       </section>
 
       {!activeShow ? (
@@ -1597,6 +1964,13 @@ export default function DirectorConsolePage() {
                                   Position: {issue.position_name}
                                 </span>
                               ) : null}
+                              {status === "new" ? (
+                                <span className="mt-1 block text-[11px] italic text-[#94a3b8]">
+                                  Suggestion:{" "}
+                                  {assignmentSuggestions.get(issue.id) ??
+                                    "No recommendation available"}
+                                </span>
+                              ) : null}
                               {latestIssueNotes[issue.id] ? (
                                 <span className="mt-1 block text-[11px] italic text-[#aab4c3]">
                                   Note: {latestIssueNotes[issue.id]}
@@ -1642,6 +2016,14 @@ export default function DirectorConsolePage() {
         </section>
       )}
       <DirectorAttentionQueue onIssueUpdated={refreshIssues} />
+      {activeShow && isTechLocationMapOpen ? (
+        <DirectorTechLocationMap
+          locations={technicianMapLocations}
+          now={timerNow}
+          onClose={() => setIsTechLocationMapOpen(false)}
+          showId={activeShow.id}
+        />
+      ) : null}
       {endSessionStep === "confirm" && sessionForActiveShow ? (
         <div
           aria-modal="true"
@@ -1933,6 +2315,7 @@ function ReportRow({ label, value }: { label: string; value: string }) {
 
 function TechOverviewCard({
   currentIssue,
+  hasAttention,
   loadCount,
   now,
   queueCount,
@@ -1945,6 +2328,7 @@ function TechOverviewCard({
     issue: IssueRecord;
     assignedAt: string | null;
   } | null;
+  hasAttention: boolean;
   loadCount: number;
   now: number | null;
   queueCount: number;
@@ -1965,10 +2349,16 @@ function TechOverviewCard({
   return (
     <Link
       aria-label={`Open Technician Console as ${technicianName}`}
-      className={`block cursor-pointer rounded-lg border p-3 transition duration-150 hover:brightness-110 hover:shadow-[0_0_18px_rgba(167,139,250,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a78bfa] ${workloadClassName}`}
+      className={`relative block cursor-pointer overflow-hidden rounded-lg border p-3 transition duration-150 hover:brightness-110 hover:shadow-[0_0_18px_rgba(167,139,250,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a78bfa] ${workloadClassName} ${hasAttention ? "tech-overview-attention-wiggle" : ""}`}
       href="/technician"
       onClick={() => setSelectedTemporaryTechnician(technicianId)}
     >
+      {hasAttention ? (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 animate-pulse rounded-lg border-2 border-[#ef4444]/70 shadow-[inset_0_0_12px_rgba(239,68,68,0.22)]"
+        />
+      ) : null}
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-white">
           {technicianName}
@@ -1981,22 +2371,40 @@ function TechOverviewCard({
         <span>Resolved {resolvedCount}</span>
       </div>
       {currentIssue ? (
-        <div className="mt-2 grid gap-1">
+        <div className="mt-3 grid gap-1 border-t border-white/10 pt-2">
           <p className="truncate text-xs text-[#dbe4ef]">
-            <IssueIdentifiers
-              channelNumber={currentIssue.issue.channel_number}
-              cueValue={currentIssue.issue.cue_value}
-              issueType={currentIssue.issue.issue_type}
-            />
+            <span className="text-[#94a3b8]">Currently Working: </span>
+            CH{" "}
+            <strong className="text-[#f28b82]">
+              {currentIssue.issue.channel_number}
+            </strong>
+            <span className="text-[#64748b]"> | </span>
+            Cue(s){" "}
+            <strong className="text-[#f28b82]">
+              {currentIssue.issue.cue_value}
+            </strong>
+          </p>
+          <p className="truncate text-xs text-[#dbe4ef]">
+            <span className="text-[#94a3b8]">Location: </span>
+            <strong className="text-[#f28b82]">
+              {currentIssue.issue.position_name ?? "—"}
+            </strong>
           </p>
           <p className="font-mono text-xs font-semibold text-[#cbd5e1]">
             {formatElapsedTime(currentIssue.assignedAt, now)}
           </p>
         </div>
       ) : (
-        <p className="mt-2 text-xs text-[#94a3b8]">
-          {queueCount > 0 ? `In Queue: ${queueCount}` : "No active issue"}
-        </p>
+        <div className="mt-3 grid gap-1 border-t border-white/10 pt-2 text-xs">
+          <p className="text-[#dbe4ef]">
+            <span className="text-[#94a3b8]">Currently Working: </span>
+            None
+          </p>
+          <p className="text-[#dbe4ef]">
+            <span className="text-[#94a3b8]">Location: </span>
+            <strong className="text-[#f28b82]">—</strong>
+          </p>
+        </div>
       )}
     </Link>
   );

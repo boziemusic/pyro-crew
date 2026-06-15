@@ -69,9 +69,18 @@ export function TechnicianMapAssist({
         onClose();
       }
     };
+    const previousDocumentOverflow =
+      document.documentElement.style.overflow;
+    const previousOverflow = document.body.style.overflow;
 
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      document.documentElement.style.overflow = previousDocumentOverflow;
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [onClose]);
 
   useEffect(() => {
@@ -92,7 +101,7 @@ export function TechnicianMapAssist({
     <div
       aria-label={`Map assist for ${positionName}`}
       aria-modal="true"
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-[#020617]/85 p-3 backdrop-blur-sm sm:p-6"
+      className="technician-map-assist-overlay fixed inset-0 z-[100] flex items-center justify-center bg-[#020617] p-0 backdrop-blur-sm md:bg-[#020617]/85 md:p-6"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
@@ -100,17 +109,17 @@ export function TechnicianMapAssist({
       }}
       role="dialog"
     >
-      <section className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-[#8b5cf6]/35 bg-[#0b1020] shadow-2xl shadow-black/60">
-        <header className="flex items-start justify-between gap-4 border-b border-white/10 px-4 py-4 sm:px-5">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#a78bfa]">
+      <section className="technician-map-assist-surface relative flex h-dvh w-full flex-col overflow-hidden bg-[#0b1020] shadow-2xl shadow-black/60 md:h-auto md:max-h-[92vh] md:max-w-5xl md:rounded-lg md:border md:border-[#8b5cf6]/35">
+        <header className="technician-map-assist-header flex shrink-0 items-start justify-between gap-3 border-b border-white/10 px-3 py-2 md:px-5 md:py-4">
+          <div className="technician-map-assist-title">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#a78bfa] md:text-xs">
               Technician Map Assist
             </p>
-            <h2 className="mt-1 text-lg font-semibold text-white">
+            <h2 className="mt-0.5 text-sm font-semibold text-white md:mt-1 md:text-lg">
               {positionName}
             </h2>
             {targetMarker ? (
-              <p className="mt-1 text-xs text-[#94a3b8]">
+              <p className="mt-0.5 hidden text-xs text-[#94a3b8] md:block">
                 Highlighting{" "}
                 {directMarker
                   ? "the position marker"
@@ -121,7 +130,7 @@ export function TechnicianMapAssist({
           </div>
           <button
             aria-label="Close map assist"
-            className="flex size-10 shrink-0 items-center justify-center rounded-md border border-white/15 text-xl font-semibold text-[#cbd5e1] transition hover:border-[#8b5cf6]/55 hover:text-white"
+            className="technician-map-assist-close flex size-11 shrink-0 touch-manipulation items-center justify-center rounded-lg border border-white/20 bg-[#111827] text-2xl font-semibold text-white transition active:bg-[#1f2937] md:size-10 md:rounded-md md:bg-transparent md:text-xl md:text-[#cbd5e1] md:hover:border-[#8b5cf6]/55 md:hover:text-white"
             onClick={onClose}
             type="button"
           >
@@ -129,15 +138,19 @@ export function TechnicianMapAssist({
           </button>
         </header>
 
-        <div className="min-h-0 overflow-auto p-3 sm:p-5">
+        <p className="technician-map-assist-guidance shrink-0 border-b border-[#8b5cf6]/25 bg-[#17102c] px-3 py-1.5 text-center text-[11px] font-semibold text-[#d8c8ff] md:hidden">
+          Rotate phone sideways for best map view.
+        </p>
+
+        <div className="technician-map-assist-body flex min-h-0 flex-1 items-center justify-center overflow-hidden p-1 md:block md:overflow-auto md:p-5">
           {fieldMap.error ? (
-            <div className="flex min-h-72 items-center justify-center rounded-lg border border-[#ef4444]/35 bg-[#2a0b13] px-6 text-center">
+            <div className="flex min-h-72 w-full items-center justify-center rounded-lg border border-[#ef4444]/35 bg-[#2a0b13] px-6 text-center">
               <p className="font-semibold text-[#fecaca]">
                 {fieldMap.error}
               </p>
             </div>
           ) : !fieldMap.imageUrl ? (
-            <div className="flex min-h-72 items-center justify-center rounded-lg border border-dashed border-white/15 bg-[#070b18] px-6 text-center">
+            <div className="flex min-h-72 w-full items-center justify-center rounded-lg border border-dashed border-white/15 bg-[#070b18] px-6 text-center">
               <p className="font-semibold text-[#cbd5e1]">
                 {fieldMap.isLoading
                   ? "Loading shared field map..."
@@ -145,14 +158,15 @@ export function TechnicianMapAssist({
               </p>
             </div>
           ) : (
-            <>
+            <div className="technician-map-assist-map-frame flex h-full min-h-0 w-full flex-col items-center justify-center md:block">
               <div
                 aria-label="Technician field map"
-                className="relative w-full overflow-hidden rounded-lg border border-white/10 bg-[#070b18] bg-contain bg-center bg-no-repeat"
+                className="technician-map-assist-canvas relative max-h-full w-full overflow-hidden rounded-none border-0 bg-[#070b18] bg-contain bg-center bg-no-repeat md:max-h-none md:rounded-lg md:border md:border-white/10"
                 role="img"
                 style={{
                   aspectRatio: fieldMap.imageAspectRatio,
                   backgroundImage: `url("${fieldMap.imageUrl}")`,
+                  backgroundSize: "contain",
                 }}
               >
                 {fieldMap.markers.map((marker) => {
@@ -203,7 +217,7 @@ export function TechnicianMapAssist({
                   No map marker found for this issue position.
                 </p>
               ) : null}
-            </>
+            </div>
           )}
         </div>
       </section>

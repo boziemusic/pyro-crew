@@ -26,6 +26,13 @@ import {
 } from "@/components/temporary-technician-store";
 import { getHistoryWriteFailureMessage } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
+import {
+  playAdditionalTechRequested,
+  playDirectorAttention,
+  playSuccess,
+  playVerificationRequested,
+  playWarning,
+} from "@/lib/app-feedback";
 
 type AttentionStatus =
   | "awaiting_verification"
@@ -46,6 +53,7 @@ type AttentionIssue = {
 };
 
 type FollowUpAction =
+  | "decline_additional_technician"
   | "not_fixed"
   | "not_fixed_retrieving_parts"
   | "not_fixed_unfixable"
@@ -108,11 +116,19 @@ export function DirectorAttentionQueue({
     action: FollowUpAction;
   } | null>(null);
   const [note, setNote] = useState("");
+  const [noteValidation, setNoteValidation] = useState<string | null>(null);
   const [updatingIssueId, setUpdatingIssueId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [historyWarning, setHistoryWarning] = useState<string | null>(null);
   const [pinnedIssue, setPinnedIssue] = useState<PinnedIssue | null>(null);
   const pinnedIssueRef = useRef<PinnedIssue | null>(null);
+  const attentionSnapshotRef = useRef<Map<string, AttentionStatus> | null>(
+    null,
+  );
+
+  useEffect(() => {
+    attentionSnapshotRef.current = null;
+  }, [activeShow?.id]);
 
   const updatePinnedIssue = useCallback((nextPin: PinnedIssue | null) => {
     pinnedIssueRef.current = nextPin;
@@ -121,6 +137,43 @@ export function DirectorAttentionQueue({
 
   const applyQueueData = useCallback(
     (nextIssues: AttentionIssue[]) => {
+      const nextSnapshot = new Map(
+        nextIssues.map((issue) => [issue.id, issue.status]),
+      );
+      const previousSnapshot = attentionSnapshotRef.current;
+
+      if (previousSnapshot) {
+        const newAttentionItems = nextIssues.filter(
+          (issue) =>
+            !previousSnapshot.has(issue.id) ||
+            previousSnapshot.get(issue.id) !== issue.status,
+        );
+
+        if (
+          newAttentionItems.some(
+            (issue) => issue.status === "awaiting_verification",
+          )
+        ) {
+          playVerificationRequested();
+        }
+        if (
+          newAttentionItems.some(
+            (issue) => issue.status === "director_assistance_requested",
+          )
+        ) {
+          playDirectorAttention();
+        }
+        if (
+          newAttentionItems.some(
+            (issue) =>
+              issue.status === "additional_technician_requested",
+          )
+        ) {
+          playAdditionalTechRequested();
+        }
+      }
+
+      attentionSnapshotRef.current = nextSnapshot;
       const pin = pinnedIssueRef.current;
 
       if (!pin) {
@@ -361,10 +414,22 @@ export function DirectorAttentionQueue({
       );
     } else {
       setFeedback(`Issue moved to ${formatIssueLabel(newStatus)}.`);
+      if (
+        newStatus === "verified_resolved" ||
+        newStatus === "closed"
+      ) {
+        playSuccess();
+      } else if (
+        newStatus === "verification_failed" ||
+        notFixedHistoryNote
+      ) {
+        playWarning();
+      }
     }
 
     setActiveAction(null);
     setNote("");
+    setNoteValidation(null);
     await refreshQueue();
     await onIssueUpdated?.();
     setUpdatingIssueId(null);
@@ -398,6 +463,7 @@ export function DirectorAttentionQueue({
   const openAction = (issueId: string, action: FollowUpAction) => {
     setActiveAction({ issueId, action });
     setNote("");
+    setNoteValidation(null);
     setFeedback(null);
   };
 
@@ -534,13 +600,87 @@ export function DirectorAttentionQueue({
                 ) : null}
 
                 {issue.status === "additional_technician_requested" ? (
-                  <AdditionalTechnicianControl
-                    currentTechnician={additionalTechnician}
-                    originalTechnician={assignments[issue.id]}
-                    onAssign={(technicianId) =>
-                      void assignAdditionalTechnician(issue, technicianId)
-                    }
-                  />
+                  <>
+                    <AdditionalTechnicianControl
+                      currentTechnician={additionalTechnician}
+                      originalTechnician={assignments[issue.id]}
+                      onAssign={(technicianId) =>
+                        void assignAdditionalTechnician(issue, technicianId)
+                      }
+                    />
+                    {!action ? (
+                      <button
+                        className="mt-2 text-left text-[11px] italic text-[#cbd5e1] underline decoration-white/25 underline-offset-2 transition hover:text-white"
+                        onClick={() =>
+                          openAction(
+                            issue.id,
+                            "decline_additional_technician",
+                          )
+                        }
+                        type="button"
+                      >
+                        Decline request
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {action === "decline_additional_technician" ? (
+                  <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-3">
+                    <label className="grid gap-2 text-xs font-semibold text-white">
+                      Decline note to technician
+                      <textarea
+                        className="min-h-20 resize-y rounded-md border border-white/15 bg-[#020617] p-2 text-sm text-white outline-none focus:border-[#a78bfa]"
+                        onChange={(event) => {
+                          setNote(event.target.value);
+                          setNoteValidation(null);
+                        }}
+                        placeholder="Required note"
+                        value={note}
+                      />
+                    </label>
+                    {noteValidation ? (
+                      <p className="mt-2 text-xs font-semibold text-[#fecaca]">
+                        {noteValidation}
+                      </p>
+                    ) : null}
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        className="flex-1 rounded-md border border-[#ef4444]/50 bg-[#2a0b13] px-2 py-2 text-xs font-bold text-[#fecaca] disabled:opacity-50"
+                        disabled={isUpdating}
+                        onClick={() => {
+                          const declineNote = note.trim();
+
+                          if (!declineNote) {
+                            setNoteValidation(
+                              "Add a note before declining this request.",
+                            );
+                            return;
+                          }
+
+                          void transitionIssue(
+                            issue,
+                            "assigned",
+                            declineNote,
+                          );
+                        }}
+                        type="button"
+                      >
+                        DECLINE REQUEST
+                      </button>
+                      <button
+                        className="rounded-md border border-white/15 px-2 py-2 text-xs font-semibold text-[#cbd5e1]"
+                        onClick={() => {
+                          setActiveAction(null);
+                          setNote("");
+                          setNoteValidation(null);
+                        }}
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
                 ) : null}
 
                 {action === "retrieving_parts" ||
@@ -598,6 +738,7 @@ export function DirectorAttentionQueue({
                         onClick={() => {
                           setActiveAction(null);
                           setNote("");
+                          setNoteValidation(null);
                         }}
                         type="button"
                       >

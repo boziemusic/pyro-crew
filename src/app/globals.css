@@ -31,3 +31,130 @@ input[type="date"] {
 .native-date-input::-webkit-calendar-picker-indicator {
   opacity: 0;
 }
+
+@keyframes tech-overview-attention-wiggle {
+  0%,
+  18%,
+  100% {
+    transform: rotate(0deg);
+  }
+
+  3.6% {
+    transform: rotate(-0.8deg);
+  }
+
+  7.2% {
+    transform: rotate(0.8deg);
+  }
+
+  10.8% {
+    transform: rotate(-0.5deg);
+  }
+
+  14.4% {
+    transform: rotate(0.5deg);
+  }
+}
+
+.tech-overview-attention-wiggle {
+  animation: tech-overview-attention-wiggle 10s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tech-overview-attention-wiggle {
+    animation: none;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 1024px) {
+  .technician-map-assist-overlay {
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
+    min-height: 100dvh !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  .technician-map-assist-surface {
+    width: 100vw !important;
+    max-width: none !important;
+    height: 100dvh !important;
+    max-height: none !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  .technician-map-assist-guidance {
+    display: block !important;
+  }
+
+  .technician-map-assist-body,
+  .technician-map-assist-map-frame {
+    min-height: 0;
+    width: 100%;
+  }
+
+  .technician-map-assist-canvas {
+    max-height: 100% !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 1024px) and (orientation: landscape) {
+  .technician-map-assist-header {
+    position: absolute;
+    inset: 0 0 auto 0;
+    z-index: 30;
+    display: flex;
+    justify-content: flex-end;
+    padding: 0.5rem;
+    border: 0;
+    background: transparent;
+  }
+
+  .technician-map-assist-title,
+  .technician-map-assist-guidance {
+    display: none !important;
+  }
+
+  .technician-map-assist-close {
+    background: rgb(7 11 24 / 85%);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 55%);
+  }
+
+  .technician-map-assist-body {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    width: 100vw;
+    height: 100dvh;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .technician-map-assist-map-frame {
+    width: 100vw !important;
+    height: 100dvh !important;
+    max-width: none !important;
+    max-height: none !important;
+  }
+
+  .technician-map-assist-canvas {
+    width: 100vw !important;
+    height: 100dvh !important;
+    max-width: none !important;
+    max-height: none !important;
+    aspect-ratio: auto !important;
+    background-size: contain !important;
+    background-position: center !important;
+    background-repeat: no-repeat !important;
+  }
+}

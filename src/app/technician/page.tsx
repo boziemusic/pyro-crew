@@ -51,6 +51,13 @@ import {
 } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { TechnicianMapAssist } from "@/components/technician-map-assist";
+import { AppFeedbackControls } from "@/components/app-feedback-controls";
+import {
+  playSuccess,
+  playUiClick,
+  playWarning,
+  vibrate,
+} from "@/lib/app-feedback";
 
 type TechnicianIssue = {
   id: string;
@@ -164,6 +171,15 @@ const awaitingDirectorStatuses = new Set([
   "unfixable_recommended",
 ]);
 
+const actionConfirmationMessages: Record<string, string> = {
+  retrieving_parts:
+    "Sent note to the Director letting them know you're going to retrieve parts for this issue.",
+  director_assistance_requested: "Communication sent to the Director.",
+  additional_technician_requested:
+    "Request for assistance sent to the Director.",
+  awaiting_verification: "Verification request sent to the Director.",
+};
+
 function getTimestampValue(value: string | null | undefined) {
   const timestamp = value ? Date.parse(value) : Number.NaN;
   return Number.isNaN(timestamp) ? 0 : timestamp;
@@ -213,6 +229,9 @@ export default function TechnicianConsolePage() {
     type: "success" | "error";
     message: string;
   } | null>(null);
+  const [actionConfirmation, setActionConfirmation] = useState<
+    string | null
+  >(null);
   const [handoffNotes, setHandoffNotes] = useState<Record<string, string>>(
     {},
   );
@@ -225,6 +244,13 @@ export default function TechnicianConsolePage() {
     useState<MobileSection>("assigned");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const hasSelectedMobileSection = useRef(false);
+  const issueAlertSnapshot = useRef<Map<string, string> | null>(null);
+  const handoffAlertSnapshot = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    issueAlertSnapshot.current = null;
+    handoffAlertSnapshot.current = null;
+  }, [activeSession?.id, activeShow?.id, selectedTechnician]);
 
   const updateQueryDiagnostic = useCallback(
     (
@@ -450,6 +476,42 @@ export default function TechnicianConsolePage() {
         error: null,
       });
       const nextIssues = (data ?? []) as TechnicianIssue[];
+      const nextAlertSnapshot = new Map(
+        nextIssues.map((issue) => [issue.id, issue.status]),
+      );
+      const previousAlertSnapshot = issueAlertSnapshot.current;
+
+      if (previousAlertSnapshot) {
+        let hasNormalAlert = false;
+        let hasUrgentAlert = false;
+
+        nextIssues.forEach((issue) => {
+          const previousStatus = previousAlertSnapshot.get(issue.id);
+
+          if (!previousStatus) {
+            hasNormalAlert = true;
+            return;
+          }
+
+          if (
+            issue.status === "verification_failed" ||
+            (awaitingDirectorStatuses.has(previousStatus) &&
+              !awaitingDirectorStatuses.has(issue.status))
+          ) {
+            hasUrgentAlert = true;
+          }
+        });
+
+        if (hasUrgentAlert) {
+          playWarning();
+          vibrate([120, 60, 120]);
+        } else if (hasNormalAlert) {
+          playWarning();
+          vibrate([80]);
+        }
+      }
+
+      issueAlertSnapshot.current = nextAlertSnapshot;
       setIssues(nextIssues);
       setFeedback((current) =>
         current?.type === "error" ? null : current,
@@ -710,6 +772,25 @@ export default function TechnicianConsolePage() {
     [handoffs, selectedTechnician],
   );
 
+  useEffect(() => {
+    const nextSnapshot = new Set(
+      incomingHandoffNotices.map((handoff) => handoff.id),
+    );
+    const previousSnapshot = handoffAlertSnapshot.current;
+
+    if (
+      previousSnapshot &&
+      incomingHandoffNotices.some(
+        (handoff) => !previousSnapshot.has(handoff.id),
+      )
+    ) {
+      playWarning();
+      vibrate([120, 60, 120]);
+    }
+
+    handoffAlertSnapshot.current = nextSnapshot;
+  }, [incomingHandoffNotices]);
+
   const acknowledgeActiveWork = async (issueId: string) => {
     const acknowledgedAt = new Date().toISOString();
     const { error } = await setActiveIssueAssignmentAcknowledgedAt(
@@ -808,6 +889,12 @@ export default function TechnicianConsolePage() {
           ? getHistoryWriteFailureMessage(historyError.message)
           : null,
       );
+      if (!historyError && actionConfirmationMessages[status]) {
+        setActionConfirmation(actionConfirmationMessages[status]);
+      }
+      if (!historyError) {
+        playSuccess();
+      }
       setNoteIssueId(null);
       setNoteStatus(null);
       setRequiredNote("");
@@ -838,6 +925,7 @@ export default function TechnicianConsolePage() {
     setFeedback(null);
 
     if (await acknowledgeActiveWork(issue.id)) {
+      playSuccess();
       setFeedback({
         type: "success",
         message: "Work started. Issue remains Retrieving Parts.",
@@ -955,7 +1043,10 @@ export default function TechnicianConsolePage() {
               />
             </p>
             <p className="text-sm text-[#94a3b8]">
-              Position: {issue.position_name ?? "None"}
+              Position:{" "}
+              <strong className="font-bold text-[#4ade80]">
+                {issue.position_name ?? "None"}
+              </strong>
             </p>
             {issue.position_name ? (
               <button
@@ -1020,6 +1111,7 @@ export default function TechnicianConsolePage() {
               type="button"
               disabled={isUpdating}
               onClick={() => {
+                playUiClick();
                 if (
                   action.status === "retrieving_parts" ||
                   action.status === "director_assistance_requested" ||
@@ -1095,6 +1187,7 @@ export default function TechnicianConsolePage() {
                   }
 
                   if (noteStatus) {
+                    playUiClick();
                     void updateIssueStatus(
                       issue,
                       noteStatus,
@@ -1228,6 +1321,7 @@ export default function TechnicianConsolePage() {
               >
                 Clear Active Show
               </button>
+              <AppFeedbackControls mobile />
             </div>
           ) : null}
         </div>
@@ -1765,6 +1859,35 @@ export default function TechnicianConsolePage() {
           );
         })}
       </nav>
+
+      {actionConfirmation ? (
+        <div
+          aria-labelledby="technician-action-confirmation-title"
+          aria-modal="true"
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-5 backdrop-blur-sm"
+          role="dialog"
+        >
+          <section className="w-full max-w-md rounded-xl border border-[#8b5cf6]/45 bg-[#0b1020] p-6 shadow-2xl shadow-black/60">
+            <p
+              className="text-sm font-bold uppercase tracking-[0.16em] text-[#a78bfa]"
+              id="technician-action-confirmation-title"
+            >
+              Action Sent
+            </p>
+            <p className="mt-4 text-lg font-semibold leading-7 text-white">
+              {actionConfirmation}
+            </p>
+            <button
+              autoFocus
+              className="mt-6 min-h-14 w-full touch-manipulation rounded-lg bg-[#6d28d9] px-5 py-3 text-lg font-bold text-white transition active:bg-[#7c3aed] md:hover:bg-[#7c3aed]"
+              onClick={() => setActionConfirmation(null)}
+              type="button"
+            >
+              OK
+            </button>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

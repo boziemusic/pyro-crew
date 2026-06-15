@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ReactNode } from "react";
+import { AppFeedbackControls } from "./app-feedback-controls";
 import { ActiveShowStrip, useActiveShow } from "./active-show-strip";
 import { useActiveContinuitySession } from "./active-continuity-session";
 
@@ -81,6 +82,7 @@ export function MissionControlShell({ children }: { children: ReactNode }) {
                 </Link>
               );
             })}
+            <AppFeedbackControls />
           </nav>
           <nav className="grid grid-cols-2 gap-2 md:hidden">
             <Link
