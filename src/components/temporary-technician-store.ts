@@ -9,8 +9,7 @@ export const TEMPORARY_TECHNICIANS = [
   { id: "tech_4", label: "Tech 4" },
 ] as const;
 
-export type TemporaryTechnicianId =
-  (typeof TEMPORARY_TECHNICIANS)[number]["id"];
+export type TemporaryTechnicianId = string;
 
 const SELECTED_TECHNICIAN_STORAGE_KEY =
   "pyro-crew-selected-temporary-technician";
@@ -24,9 +23,7 @@ let cachedSelectedTechnician: TemporaryTechnicianId =
 function isTemporaryTechnicianId(
   value: unknown,
 ): value is TemporaryTechnicianId {
-  return TEMPORARY_TECHNICIANS.some(
-    (technician) => technician.id === value,
-  );
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function readSelectedTechnicianSnapshot() {
@@ -38,8 +35,8 @@ function readSelectedTechnicianSnapshot() {
     SELECTED_TECHNICIAN_STORAGE_KEY,
   );
 
-  cachedSelectedTechnician = isTemporaryTechnicianId(stored)
-    ? stored
+  cachedSelectedTechnician = isTemporaryTechnicianId(stored?.trim())
+    ? stored.trim()
     : DEFAULT_SELECTED_TECHNICIAN;
 
   return cachedSelectedTechnician;
@@ -83,6 +80,37 @@ export function getTemporaryTechnicianLabel(
   return (
     TEMPORARY_TECHNICIANS.find(
       (technician) => technician.id === technicianId,
-    )?.label ?? "Unassigned"
+    )?.label ?? technicianId ?? "Unassigned"
+  );
+}
+
+export function getTechnicianInitials(technicianName: string) {
+  const label = getTemporaryTechnicianLabel(technicianName).trim();
+  const parts = label
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (parts.length === 0) {
+    return "?";
+  }
+
+  return parts
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
+}
+
+export function normalizeTechnicianDisplayName(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+export function isValidTechnicianDisplayName(value: string) {
+  const normalized = normalizeTechnicianDisplayName(value);
+
+  return (
+    normalized.length >= 2 &&
+    normalized.length <= 24 &&
+    /^[A-Za-z0-9 '-]+$/.test(normalized)
   );
 }

@@ -1107,12 +1107,10 @@ export default function TechnicianConsolePage() {
       message: "Handoff acknowledged.",
     });
 
-    const originalTech = TEMPORARY_TECHNICIANS.find(
-      (technician) => technician.id === handoff.fromTechnician,
-    )?.label;
-    const newTech = TEMPORARY_TECHNICIANS.find(
-      (technician) => technician.id === handoff.toTechnician,
-    )?.label;
+    const originalTech = getTemporaryTechnicianLabel(
+      handoff.fromTechnician,
+    );
+    const newTech = getTemporaryTechnicianLabel(handoff.toTechnician);
     const historyNote = `${originalTech} acknowledged handoff to ${newTech}.${
       note ? ` Handoff note: ${note}` : ""
     }`;
@@ -1145,12 +1143,10 @@ export default function TechnicianConsolePage() {
       message: "Handoff accepted.",
     });
 
-    const originalTech = TEMPORARY_TECHNICIANS.find(
-      (technician) => technician.id === handoff.fromTechnician,
-    )?.label;
-    const receivingTech = TEMPORARY_TECHNICIANS.find(
-      (technician) => technician.id === handoff.toTechnician,
-    )?.label;
+    const originalTech = getTemporaryTechnicianLabel(
+      handoff.fromTechnician,
+    );
+    const receivingTech = getTemporaryTechnicianLabel(handoff.toTechnician);
     const { error } = await supabase.from("issue_status_history").insert({
       changed_by_user_id: null,
       issue_id: handoff.issueId,
@@ -1793,6 +1789,11 @@ export default function TechnicianConsolePage() {
               }}
               className="h-11 rounded-md border border-white/15 bg-[#070b18] px-3 text-base text-white outline-none transition focus:border-[#a78bfa] focus:ring-2 focus:ring-[#4c00a4]/40"
             >
+              {!selectedTechnician.startsWith("tech_") ? (
+                <option value={selectedTechnician}>
+                  {getTemporaryTechnicianLabel(selectedTechnician)}
+                </option>
+              ) : null}
               {TEMPORARY_TECHNICIANS.map((technician) => (
                 <option key={technician.id} value={technician.id}>
                   {technician.label}

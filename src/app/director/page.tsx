@@ -27,6 +27,7 @@ import {
   createHandoffNotices,
   createTechnicianNotice,
   useActiveAdditionalTechnicianAssignments,
+  useShowTechnicianNames,
 } from "@/components/collaboration-store";
 import {
   assignIssueToTechnician,
@@ -38,6 +39,7 @@ import {
   useActiveContinuitySession,
 } from "@/components/active-continuity-session";
 import {
+  getTechnicianInitials,
   getTemporaryTechnicianLabel,
   setSelectedTemporaryTechnician,
   TEMPORARY_TECHNICIANS,
@@ -262,6 +264,8 @@ export default function DirectorConsolePage() {
     activeShow?.id,
     sessionForActiveShow?.id,
   );
+  const { technicianNames: joinedTechnicianNames } =
+    useShowTechnicianNames(activeShow?.id, sessionForActiveShow?.id);
   const isScripted = activeShow?.show_mode === "scripted";
   const isManual = activeShow?.show_mode === "manual";
   const [channelNumber, setChannelNumber] = useState("");
@@ -664,9 +668,53 @@ export default function DirectorConsolePage() {
     return assignments;
   }, [issueAssignmentHistory]);
 
+  const technicianOptions = useMemo(() => {
+    const names = new Set(
+      joinedTechnicianNames
+        .map((name) => name.trim())
+        .filter(Boolean),
+    );
+
+    activeIssueAssignments.forEach((assignment) => {
+      if (assignment.technician_name.trim()) {
+        names.add(assignment.technician_name.trim());
+      }
+    });
+    Object.values(technicianAssignments).forEach((name) => {
+      if (name?.trim()) {
+        names.add(name.trim());
+      }
+    });
+    Object.values(additionalAssignments).forEach((name) => {
+      if (name?.trim()) {
+        names.add(name.trim());
+      }
+    });
+    issueAssignmentHistory.forEach((assignment) => {
+      if (assignment.technician_name.trim()) {
+        names.add(assignment.technician_name.trim());
+      }
+    });
+
+    const joinedOptions = [...names].map((name) => ({
+      id: name as TemporaryTechnicianId,
+      label: getTemporaryTechnicianLabel(name),
+    }));
+
+    return joinedOptions.length > 0
+      ? joinedOptions
+      : TEMPORARY_TECHNICIANS;
+  }, [
+    activeIssueAssignments,
+    additionalAssignments,
+    issueAssignmentHistory,
+    joinedTechnicianNames,
+    technicianAssignments,
+  ]);
+
   const technicianOverview = useMemo(
     () =>
-      TEMPORARY_TECHNICIANS.map((technician) => {
+      technicianOptions.map((technician) => {
         const assignmentsForTechnician = activeIssueAssignments.filter(
           (assignment) => assignment.technician_name === technician.id,
         );
@@ -870,6 +918,7 @@ export default function DirectorConsolePage() {
       additionalAssignments,
       currentStatusEnteredAt,
       issues,
+      technicianOptions,
       latestHistoricalTechnicianByIssue,
       latestIssueActionAt,
       sessionForActiveShow?.id,
@@ -879,7 +928,7 @@ export default function DirectorConsolePage() {
   );
   const technicianMapLocations = useMemo<TechnicianMapLocation[]>(
     () =>
-      technicianOverview.map((technician, index) => ({
+      technicianOverview.map((technician) => ({
         activityStartedAt: technician.locationActivityAt,
         channelNumber:
           technician.locationIssue?.channel_number ?? null,
@@ -889,7 +938,7 @@ export default function DirectorConsolePage() {
         label: technician.label,
         positionName: technician.locationIssue?.position_name ?? null,
         resolvedCount: technician.resolvedCount,
-        shortLabel: `T${index + 1}`,
+        shortLabel: getTechnicianInitials(technician.label),
         status:
           technician.locationSource === "none"
             ? "ready"
@@ -1957,7 +2006,7 @@ export default function DirectorConsolePage() {
                                     value=""
                                   >
                                     <option value="">Assign Tech</option>
-                                    {TEMPORARY_TECHNICIANS.map(
+                                    {technicianOptions.map(
                                       (technician) => (
                                         <option
                                           key={technician.id}
@@ -1994,7 +2043,7 @@ export default function DirectorConsolePage() {
                                       technicianAssignments[issue.id]
                                     }
                                   >
-                                    {TEMPORARY_TECHNICIANS.map(
+                                    {technicianOptions.map(
                                       (technician) => (
                                         <option
                                           key={technician.id}

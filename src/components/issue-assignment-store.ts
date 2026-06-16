@@ -2,10 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
-import {
-  TEMPORARY_TECHNICIANS,
-  type TemporaryTechnicianId,
-} from "./temporary-technician-store";
+import type { TemporaryTechnicianId } from "./temporary-technician-store";
 
 export type IssueAssignment = {
   id: string;
@@ -17,14 +14,6 @@ export type IssueAssignment = {
   assigned_at: string;
   acknowledged_at: string | null;
 };
-
-function isTemporaryTechnicianId(
-  value: string,
-): value is TemporaryTechnicianId {
-  return TEMPORARY_TECHNICIANS.some(
-    (technician) => technician.id === value,
-  );
-}
 
 export async function fetchActiveIssueAssignments({
   sessionId,
@@ -229,11 +218,7 @@ export function useActiveIssueAssignments(
   const assignmentsByIssue = useMemo(
     () =>
       Object.fromEntries(
-        assignments
-          .filter((assignment) =>
-            isTemporaryTechnicianId(assignment.technician_name),
-          )
-          .map((assignment) => [
+        assignments.map((assignment) => [
             assignment.issue_id,
             assignment.technician_name as TemporaryTechnicianId,
           ]),

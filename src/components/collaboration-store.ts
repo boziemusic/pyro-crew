@@ -314,6 +314,156 @@ export async function updateIncomingHandoffNotice({
   return result;
 }
 
+export async function recordJoinedTechnician({
+  sessionId,
+  showId,
+  technicianId,
+}: {
+  sessionId: string | null;
+  showId: string;
+  technicianId: TemporaryTechnicianId;
+}) {
+  const supabase = createSupabaseBrowserClient();
+  const { data: existing, error: existingError } = await supabase
+    .from("technician_notices")
+    .select("id")
+    .eq("show_id", showId)
+    .eq("technician_name", technicianId)
+    .eq("notice_type", "technician_joined")
+    .limit(1);
+
+  if (existingError) {
+    return { error: existingError };
+  }
+
+  if (existing && existing.length > 0) {
+    return { error: null };
+  }
+
+  const result = await supabase.from("technician_notices").insert({
+    issue_id: null,
+    message: null,
+    notice_type: "technician_joined",
+    session_id: sessionId,
+    show_id: showId,
+    status: "acknowledged",
+    technician_name: technicianId,
+    title: "Technician Joined",
+  });
+
+  if (!result.error) {
+    announceCollaborationChange();
+  }
+
+  return { error: result.error };
+}
+
+export async function fetchShowTechnicianNames({
+  showId,
+}: {
+  sessionId?: string | null;
+  showId: string;
+}) {
+  const supabase = createSupabaseBrowserClient();
+  const [
+    primaryResult,
+    additionalResult,
+    noticeResult,
+  ] = await Promise.all([
+    supabase
+      .from("issue_assignments")
+      .select("technician_name")
+      .eq("show_id", showId),
+    supabase
+      .from("additional_technician_assignments")
+      .select("primary_technician_name, additional_technician_name")
+      .eq("show_id", showId),
+    supabase
+      .from("technician_notices")
+      .select("technician_name")
+      .eq("show_id", showId),
+  ]);
+
+  const error =
+    primaryResult.error ?? additionalResult.error ?? noticeResult.error;
+
+  if (error) {
+    return { data: [], error };
+  }
+
+  const names = new Set<string>();
+
+  (primaryResult.data ?? []).forEach((row) => {
+    if (row.technician_name?.trim()) {
+      names.add(row.technician_name.trim());
+    }
+  });
+  (additionalResult.data ?? []).forEach((row) => {
+    if (row.primary_technician_name?.trim()) {
+      names.add(row.primary_technician_name.trim());
+    }
+    if (row.additional_technician_name?.trim()) {
+      names.add(row.additional_technician_name.trim());
+    }
+  });
+  (noticeResult.data ?? []).forEach((row) => {
+    if (row.technician_name?.trim()) {
+      names.add(row.technician_name.trim());
+    }
+  });
+
+  return {
+    data: [...names].sort((left, right) =>
+      left.localeCompare(right, undefined, { sensitivity: "base" }),
+    ),
+    error: null,
+  };
+}
+
+export function useShowTechnicianNames(
+  showId: string | undefined,
+  sessionId: string | null | undefined,
+) {
+  const [technicianNames, setTechnicianNames] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!showId) {
+      setTechnicianNames([]);
+      setError(null);
+      return;
+    }
+
+    const { data, error: queryError } = await fetchShowTechnicianNames({
+      sessionId,
+      showId,
+    });
+
+    if (queryError) {
+      setError(queryError.message);
+      return;
+    }
+
+    setTechnicianNames(data);
+    setError(null);
+  }, [sessionId, showId]);
+
+  useEffect(() => {
+    const handleChange = () => void refresh();
+    const initialId = window.setTimeout(handleChange, 0);
+    const intervalId = window.setInterval(handleChange, 5000);
+    window.addEventListener(COLLABORATION_EVENT, handleChange);
+
+    return () => {
+      window.clearTimeout(initialId);
+      window.clearInterval(intervalId);
+      window.removeEventListener(COLLABORATION_EVENT, handleChange);
+    };
+  }, [refresh]);
+
+  return { error, refresh, technicianNames };
+}
+
 export function parseHandoffNoticePayload(
   message: string | null,
 ): HandoffNoticePayload | null {

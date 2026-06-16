@@ -27,6 +27,7 @@ import {
   createAdditionalTechnicianAssignment,
   createTechnicianNotice,
   useActiveAdditionalTechnicianAssignments,
+  useShowTechnicianNames,
 } from "@/components/collaboration-store";
 import { getHistoryWriteFailureMessage } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
@@ -120,6 +121,13 @@ export function DirectorAttentionQueue({
       ? activeSession.id
       : null,
   );
+  const { technicianNames: joinedTechnicianNames } =
+    useShowTechnicianNames(
+      activeShow?.id,
+      activeSession && activeSession.show_id === activeShow?.id
+        ? activeSession.id
+        : null,
+    );
   const [issues, setIssues] = useState<AttentionIssue[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeAction, setActiveAction] = useState<{
@@ -731,6 +739,14 @@ export function DirectorAttentionQueue({
                   <>
                     <AdditionalTechnicianControl
                       currentTechnician={additionalTechnician}
+                      technicianOptions={
+                        joinedTechnicianNames.length > 0
+                          ? joinedTechnicianNames.map((name) => ({
+                              id: name,
+                              label: getTemporaryTechnicianLabel(name),
+                            }))
+                          : [...TEMPORARY_TECHNICIANS]
+                      }
                       originalTechnician={assignments[issue.id]}
                       onAssign={(technicianId) =>
                         void assignAdditionalTechnician(issue, technicianId)
@@ -983,12 +999,14 @@ function AdditionalTechnicianControl({
   currentTechnician,
   originalTechnician,
   onAssign,
+  technicianOptions,
 }: {
   currentTechnician: TemporaryTechnicianId | undefined;
   originalTechnician: TemporaryTechnicianId | undefined;
   onAssign: (technicianId: TemporaryTechnicianId) => void;
+  technicianOptions: { id: TemporaryTechnicianId; label: string }[];
 }) {
-  const availableTechnicians = TEMPORARY_TECHNICIANS.filter(
+  const availableTechnicians = technicianOptions.filter(
     (technician) => technician.id !== originalTechnician,
   );
   const [selectedTechnician, setSelectedTechnician] =

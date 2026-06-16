@@ -28,11 +28,13 @@ import {
   useActiveContinuitySession,
 } from "@/components/active-continuity-session";
 import {
+  isValidTechnicianDisplayName,
+  normalizeTechnicianDisplayName,
   setSelectedTemporaryTechnician,
-  TEMPORARY_TECHNICIANS,
   type TemporaryTechnicianId,
   useSelectedTemporaryTechnician,
 } from "@/components/temporary-technician-store";
+import { recordJoinedTechnician } from "@/components/collaboration-store";
 import {
   SCRIPT_ADAPTERS,
   type ScriptAdapterKey,
@@ -942,23 +944,24 @@ function ConfiguredShowsWorkspace() {
 
   const continueToTechnicianConsole = async (showCode: string) => {
     const normalizedShowCode = normalizeJoinCode(showCode);
-    const hasSelectedTechnician = TEMPORARY_TECHNICIANS.some(
-      (technician) => technician.id === selectedTechnician,
-    );
+    const normalizedTechnicianName =
+      normalizeTechnicianDisplayName(selectedTechnician);
 
     if (!/^[A-Z0-9]{4}$/.test(normalizedShowCode)) {
       setMobileEntryMessage("Enter a 4-character show code.");
       return;
     }
 
-    if (!hasSelectedTechnician) {
-      setMobileEntryMessage("Select a technician identity.");
+    if (!isValidTechnicianDisplayName(normalizedTechnicianName)) {
+      setMobileEntryMessage(
+        "Enter a 2-24 character name using letters, numbers, spaces, hyphen, or apostrophe.",
+      );
       return;
     }
 
     setIsEnteringTechnicianConsole(true);
     setMobileEntryMessage(null);
-    setSelectedTemporaryTechnician(selectedTechnician);
+    setSelectedTemporaryTechnician(normalizedTechnicianName);
 
     try {
       const { data: matchedShow, error: showError } = await supabase
@@ -1010,7 +1013,12 @@ function ConfiguredShowsWorkspace() {
       }
 
       setActiveContinuitySession(session as ActiveContinuitySession);
-      setSelectedTemporaryTechnician(selectedTechnician);
+      setSelectedTemporaryTechnician(normalizedTechnicianName);
+      await recordJoinedTechnician({
+        sessionId: (session as ActiveContinuitySession).id,
+        showId: show.id,
+        technicianId: normalizedTechnicianName,
+      });
       router.push("/technician");
     } catch (error) {
       const errorMessage =
@@ -1742,12 +1750,17 @@ function MobileTechnicianEntry({
   supabaseConfigured: boolean;
 }) {
   const [joinCode, setJoinCode] = useState("");
+  const [technicianName, setTechnicianName] = useState(
+    selectedTechnician.startsWith("tech_") ? "" : selectedTechnician,
+  );
   const normalizedJoinCode = normalizeJoinCode(joinCode);
-  const hasSelectedTechnician = TEMPORARY_TECHNICIANS.some(
-    (technician) => technician.id === selectedTechnician,
+  const normalizedTechnicianName =
+    normalizeTechnicianDisplayName(technicianName);
+  const hasValidTechnicianName = isValidTechnicianDisplayName(
+    normalizedTechnicianName,
   );
   const isJoinEnabled =
-    joinCode.length === 4 && hasSelectedTechnician && !isEntering;
+    joinCode.length === 4 && hasValidTechnicianName && !isEntering;
 
   return (
     <div className="mx-auto flex w-full max-w-lg flex-col gap-5 px-4 py-5">
@@ -1759,9 +1772,8 @@ function MobileTechnicianEntry({
           Join field operations
         </h1>
         <p className="mt-3 text-sm leading-6 text-[#b6c3d1]">
-          Select the active display and your technician identity. Show setup
-          and session creation remain Director workflows on a desktop or
-          laptop.
+          Enter the show code and your field display name. Show setup and
+          session creation remain Director workflows on a desktop or laptop.
         </p>
       </section>
 
@@ -1803,24 +1815,26 @@ function MobileTechnicianEntry({
           Step 2
         </p>
         <h2 className="mt-1 text-lg font-semibold text-white">
-          Technician Identity
+          Enter Your Name
         </h2>
-        <select
-          aria-label="Select Technician"
+        <input
+          aria-label="Enter Your Name"
+          autoCapitalize="words"
+          autoComplete="name"
           className="mt-4 min-h-14 w-full touch-manipulation rounded-xl border border-white/15 bg-[#070b18] px-4 py-3 text-base font-semibold text-white outline-none focus:border-[#8b5cf6] focus:ring-2 focus:ring-[#4c00a4]/40"
-          onChange={(event) =>
-            onSelectTechnician(
-              event.target.value as TemporaryTechnicianId,
-            )
-          }
-          value={selectedTechnician}
-        >
-          {TEMPORARY_TECHNICIANS.map((technician) => (
-            <option key={technician.id} value={technician.id}>
-              {technician.label}
-            </option>
-          ))}
-        </select>
+          maxLength={24}
+          onChange={(event) => {
+            setTechnicianName(event.currentTarget.value);
+            onSelectTechnician(event.currentTarget.value);
+          }}
+          placeholder="Bo Domescik"
+          type="text"
+          value={technicianName}
+        />
+        <p className="mt-2 text-xs leading-5 text-[#94a3b8]">
+          2-24 characters. Letters, numbers, spaces, hyphen, and apostrophe
+          are allowed.
+        </p>
       </section>
 
       {message ? (

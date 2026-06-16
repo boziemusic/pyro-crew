@@ -94,8 +94,74 @@ export function parseEventDescription(value: string | undefined) {
   };
 }
 
+function isEventHeader(record: string[]) {
+  const headers = new Set(record.map(normalizeHeader));
+
+  return (
+    headers.has("eventtime") &&
+    headers.has("channel") &&
+    headers.has("cue") &&
+    headers.has("eventdescription")
+  );
+}
+
+function getFirstNonBlankCell(record: string[]) {
+  return record.find((value) => value.trim().length > 0)?.trim() ?? "";
+}
+
+function getTrackName(record: string[]) {
+  const firstCell = getFirstNonBlankCell(record);
+
+  return firstCell.toLowerCase().startsWith("#track")
+    ? firstCell.replace(/^#+/, "").trim()
+    : null;
+}
+
+function isMetadataOrHeaderRecord(record: string[]) {
+  const firstCell = getFirstNonBlankCell(record);
+
+  return firstCell.startsWith("#");
+}
+
+function parseEventRecord(
+  record: string[],
+  rawHeaders: string[],
+  channelIndex: number,
+  cueIndex: number,
+  descriptionIndex: number,
+  sourceTrackName: string | null,
+) {
+  const rawRow = Object.fromEntries(
+    rawHeaders.map((header, index) => [
+      header,
+      record[index]?.trim() ?? "",
+    ]),
+  );
+  const channelValue = optionalValue(record[channelIndex]);
+  const parsedChannel =
+    channelValue !== null ? Number(channelValue) : Number.NaN;
+  const { effectName, positionName } = parseEventDescription(
+    record[descriptionIndex],
+  );
+
+  if (sourceTrackName) {
+    rawRow.__source_track = sourceTrackName;
+  }
+
+  return {
+    channel_number: Number.isFinite(parsedChannel) ? parsedChannel : null,
+    cue_value: optionalValue(record[cueIndex]),
+    position_name: positionName,
+    effect_name: effectName,
+    raw_row: rawRow,
+  } satisfies ParsedScriptRow;
+}
+
 export function parseCobra6xCsv(contents: string): ScriptParseResult {
-  const { records, errors } = parseCsvRecords(contents.replace(/^\uFEFF/, ""));
+  const { records, errors } = parseCsvRecords(
+    contents.replace(/^\uFEFF/, ""),
+    true,
+  );
 
   if (records.length === 0) {
     return {
@@ -106,18 +172,72 @@ export function parseCobra6xCsv(contents: string): ScriptParseResult {
     };
   }
 
-  const eventHeaderIndex = records.findIndex((record) => {
-    const headers = new Set(record.map(normalizeHeader));
+  const parsedRows: ParsedScriptRow[] = [];
+  let skippedRowCount = 0;
+  let eventTableCount = 0;
+  let trackSectionCount = 0;
+  let currentTrackName: string | null = null;
 
-    return (
-      headers.has("eventtime") &&
-      headers.has("channel") &&
-      headers.has("cue") &&
-      headers.has("eventdescription")
+  for (let index = 0; index < records.length; index += 1) {
+    const trackName = getTrackName(records[index]);
+
+    if (trackName) {
+      currentTrackName = trackName;
+      trackSectionCount += 1;
+      continue;
+    }
+
+    if (!isEventHeader(records[index])) {
+      continue;
+    }
+
+    eventTableCount += 1;
+
+    const rawHeaders = records[index].map((header, headerIndex) =>
+      header.trim() || `column_${headerIndex + 1}`,
     );
-  });
+    const normalizedHeaders = rawHeaders.map(normalizeHeader);
+    const channelIndex = normalizedHeaders.indexOf("channel");
+    const cueIndex = normalizedHeaders.indexOf("cue");
+    const descriptionIndex = normalizedHeaders.indexOf("eventdescription");
 
-  if (eventHeaderIndex < 0) {
+    for (
+      let eventIndex = index + 1;
+      eventIndex < records.length;
+      eventIndex += 1
+    ) {
+      const eventRecord = records[eventIndex];
+
+      if (isMetadataOrHeaderRecord(eventRecord)) {
+        index = eventIndex - 1;
+        break;
+      }
+
+      const parsedRow = parseEventRecord(
+        eventRecord,
+        rawHeaders,
+        channelIndex,
+        cueIndex,
+        descriptionIndex,
+        currentTrackName,
+      );
+
+      if (
+        parsedRow.channel_number !== null &&
+        parsedRow.cue_value !== null
+      ) {
+        parsedRows.push(parsedRow);
+      } else {
+        skippedRowCount += 1;
+      }
+
+      if (eventIndex === records.length - 1) {
+        index = eventIndex;
+      }
+    }
+  }
+
+  if (eventTableCount === 0) {
     return {
       rows: [],
       skippedRowCount: 0,
@@ -129,42 +249,17 @@ export function parseCobra6xCsv(contents: string): ScriptParseResult {
     };
   }
 
-  const rawHeaders = records[eventHeaderIndex].map((header, index) =>
-    header.trim() || `column_${index + 1}`,
-  );
-  const normalizedHeaders = rawHeaders.map(normalizeHeader);
-  const channelIndex = normalizedHeaders.indexOf("channel");
-  const cueIndex = normalizedHeaders.indexOf("cue");
-  const descriptionIndex = normalizedHeaders.indexOf("eventdescription");
-
-  const eventRecords = records.slice(eventHeaderIndex + 1);
-  const parsedRows = eventRecords.map<ParsedScriptRow>((record) => {
-    const rawRow = Object.fromEntries(
-      rawHeaders.map((header, index) => [header, record[index]?.trim() ?? ""]),
-    );
-    const channelValue = optionalValue(record[channelIndex]);
-    const parsedChannel =
-      channelValue !== null ? Number(channelValue) : Number.NaN;
-    const { effectName, positionName } = parseEventDescription(
-      record[descriptionIndex],
-    );
-
-    return {
-      channel_number: Number.isFinite(parsedChannel) ? parsedChannel : null,
-      cue_value: optionalValue(record[cueIndex]),
-      position_name: positionName,
-      effect_name: effectName,
-      raw_row: rawRow,
-    };
-  });
-  const rows = parsedRows.filter(
-    (row) => row.channel_number !== null && row.cue_value !== null,
-  );
-  const skippedRowCount = parsedRows.length - rows.length;
-  const warnings =
-    skippedRowCount > 0
+  const rows = parsedRows;
+  const warnings = [
+    ...(skippedRowCount > 0
       ? [`Skipped ${skippedRowCount} blank or invalid script row(s).`]
-      : [];
+      : []),
+    ...(trackSectionCount > 0 && eventTableCount > 1
+      ? [
+          `Flattened ${eventTableCount} COBRA 6.X event table(s) across ${trackSectionCount} track section(s).`,
+        ]
+      : []),
+  ];
   const resultErrors =
     rows.length === 0
       ? [...errors, "COBRA script does not contain any valid event rows."]

@@ -6,6 +6,7 @@ import { useFieldMap } from "@/components/field-map-store";
 import { formatIssueLabel } from "@/components/issue-identifiers";
 import { useShowPositions } from "@/components/position-store";
 import {
+  getTechnicianInitials,
   setSelectedTemporaryTechnician,
   type TemporaryTechnicianId,
 } from "@/components/temporary-technician-store";
@@ -28,27 +29,33 @@ export type TechnicianMapLocation = {
     | "ready";
 };
 
-const technicianStyles: Record<
-  TemporaryTechnicianId,
-  { accent: string; marker: string }
-> = {
-  tech_1: {
+const technicianPalette = [
+  {
     accent: "border-[#3b82f6]/55 bg-[#0b1b35]",
     marker: "border-[#bfdbfe] bg-[#1d4ed8]",
   },
-  tech_2: {
+  {
     accent: "border-[#22c55e]/55 bg-[#082515]",
     marker: "border-[#bbf7d0] bg-[#15803d]",
   },
-  tech_3: {
+  {
     accent: "border-[#f59e0b]/55 bg-[#2a1c06]",
     marker: "border-[#fde68a] bg-[#b45309]",
   },
-  tech_4: {
+  {
     accent: "border-[#d946ef]/55 bg-[#2a0b2f]",
     marker: "border-[#f5d0fe] bg-[#a21caf]",
   },
-};
+] as const;
+
+function getTechnicianStyle(technicianId: string) {
+  const hash = Array.from(technicianId).reduce(
+    (total, character) => total + character.charCodeAt(0),
+    0,
+  );
+
+  return technicianPalette[hash % technicianPalette.length];
+}
 
 const statusLabels = {
   assigned: "Assigned",
@@ -288,7 +295,7 @@ export function DirectorTechLocationMap({
                     >
                       <Link
                         aria-label={`${location.label}, ${statusLabels[location.status]}, ${location.positionName}`}
-                        className={`relative flex size-10 cursor-pointer items-center justify-center rounded-full border-[3px] text-xs font-black text-white shadow-[0_4px_16px_rgba(0,0,0,0.9)] after:absolute after:-bottom-2 after:left-1/2 after:size-3 after:-translate-x-1/2 after:rotate-45 after:border-b-[3px] after:border-r-[3px] after:border-inherit after:bg-inherit focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${technicianStyles[location.id].marker} ${
+                        className={`relative flex size-10 cursor-pointer items-center justify-center rounded-full border-[3px] text-xs font-black text-white shadow-[0_4px_16px_rgba(0,0,0,0.9)] after:absolute after:-bottom-2 after:left-1/2 after:size-3 after:-translate-x-1/2 after:rotate-45 after:border-b-[3px] after:border-r-[3px] after:border-inherit after:bg-inherit focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${getTechnicianStyle(location.id).marker} ${
                           location.status === "working"
                             ? "border-dashed opacity-65 after:border-dashed"
                             : "border-solid"
@@ -298,10 +305,10 @@ export function DirectorTechLocationMap({
                           setSelectedTemporaryTechnician(location.id)
                         }
                       >
-                        {location.shortLabel}
+                        {getTechnicianInitials(location.label)}
                       </Link>
                       <Link
-                        className={`invisible absolute bottom-12 left-1/2 z-30 hidden w-64 -translate-x-1/2 translate-y-2 cursor-pointer rounded-lg border p-3 opacity-0 shadow-2xl shadow-black/70 transition duration-200 ease-out group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 lg:block ${technicianStyles[location.id].accent}`}
+                        className={`invisible absolute bottom-12 left-1/2 z-30 hidden w-64 -translate-x-1/2 translate-y-2 cursor-pointer rounded-lg border p-3 opacity-0 shadow-2xl shadow-black/70 transition duration-200 ease-out group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100 lg:block ${getTechnicianStyle(location.id).accent}`}
                         href="/technician"
                         onClick={() =>
                           setSelectedTemporaryTechnician(location.id)
@@ -310,9 +317,9 @@ export function DirectorTechLocationMap({
                         <div className="flex items-center gap-3">
                           <div
                             aria-hidden="true"
-                            className={`flex size-11 shrink-0 items-center justify-center rounded-lg border-2 text-xs font-black text-white ${technicianStyles[location.id].marker}`}
+                            className={`flex size-11 shrink-0 items-center justify-center rounded-lg border-2 text-xs font-black text-white ${getTechnicianStyle(location.id).marker}`}
                           >
-                            {location.shortLabel}
+                            {getTechnicianInitials(location.label)}
                           </div>
                           <div className="min-w-0">
                             <p className="truncate text-sm font-bold text-white">
@@ -409,7 +416,7 @@ export function DirectorTechLocationMap({
                 return (
                   <Link
                     aria-label={`Open Technician Console as ${location.label}`}
-                    className={`block cursor-pointer rounded-lg border p-3 transition duration-150 hover:brightness-110 hover:shadow-[0_0_16px_rgba(167,139,250,0.14)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a78bfa] ${technicianStyles[location.id].accent}`}
+                    className={`block cursor-pointer rounded-lg border p-3 transition duration-150 hover:brightness-110 hover:shadow-[0_0_16px_rgba(167,139,250,0.14)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a78bfa] ${getTechnicianStyle(location.id).accent}`}
                     href="/technician"
                     key={location.id}
                     onClick={() =>
@@ -419,9 +426,9 @@ export function DirectorTechLocationMap({
                     <div className="flex items-center gap-3">
                       <div
                         aria-hidden="true"
-                        className={`flex size-10 shrink-0 items-center justify-center rounded-lg border-2 text-xs font-black text-white ${technicianStyles[location.id].marker}`}
+                        className={`flex size-10 shrink-0 items-center justify-center rounded-lg border-2 text-xs font-black text-white ${getTechnicianStyle(location.id).marker}`}
                       >
-                        {location.shortLabel}
+                        {getTechnicianInitials(location.label)}
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-bold text-white">
