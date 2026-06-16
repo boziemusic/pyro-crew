@@ -124,6 +124,51 @@ type DirectorReturnPopupContent = {
   subtext: string | null;
 };
 
+type SessionStatusRecord = {
+  ended_at: string | null;
+  id: string;
+  status: string;
+};
+
+type ScoreboardIssue = {
+  id: string;
+  status: string;
+  created_at: string | null;
+};
+
+type ScoreboardHistory = {
+  issue_id: string;
+  new_status: string;
+  created_at: string | null;
+};
+
+type ScoreboardAssignment = {
+  issue_id: string;
+  technician_name: string;
+  assigned_at: string | null;
+};
+
+type ScoreboardAdditionalAssignment = {
+  issue_id: string;
+  additional_technician_name: string;
+  assigned_at: string | null;
+};
+
+type ScoreboardNotice = {
+  technician_name: string;
+};
+
+type TechnicianScoreboardEntry = {
+  averageResolutionMs: number | null;
+  effortActions: number;
+  hitRate: number;
+  issuesResolved: number;
+  issuesWorked: number;
+  notFixedReturns: number;
+  score: number;
+  technicianName: string;
+};
+
 const initialQueryDiagnostics: Record<
   TechnicianQueryName,
   TechnicianQueryDiagnostic
@@ -228,6 +273,128 @@ const resolutionNoticeTypes = new Set([
 function getTimestampValue(value: string | null | undefined) {
   const timestamp = value ? Date.parse(value) : Number.NaN;
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function formatScoreboardDuration(value: number | null) {
+  if (!value || value <= 0) {
+    return "—";
+  }
+
+  const totalSeconds = Math.round(value / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return `${hours}h ${remainingMinutes}m`;
+  }
+
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+}
+
+function getAverageScoreboardDuration(values: number[]) {
+  if (values.length === 0) {
+    return null;
+  }
+
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function calculateScoreboardEntry({
+  assignments,
+  historiesByIssue,
+  issuesById,
+  technicianName,
+}: {
+  assignments: {
+    assignedAt: string | null;
+    issueId: string;
+  }[];
+  historiesByIssue: Map<string, ScoreboardHistory[]>;
+  issuesById: Map<string, ScoreboardIssue>;
+  technicianName: string;
+}): TechnicianScoreboardEntry {
+  const issueIds = [...new Set(assignments.map((assignment) => assignment.issueId))];
+  const effortStatuses = new Set([
+    "retrieving_parts",
+    "additional_technician_requested",
+    "director_assistance_requested",
+    "unfixable",
+    "unfixable_recommended",
+  ]);
+  let issuesResolved = 0;
+  let effortActions = 0;
+  let notFixedReturns = 0;
+  const resolutionDurations: number[] = [];
+
+  for (const issueId of issueIds) {
+    const issue = issuesById.get(issueId);
+    const histories = historiesByIssue.get(issueId) ?? [];
+    const terminalHistory = histories.find((history) =>
+      ["verified_resolved", "closed", "unfixable"].includes(
+        history.new_status,
+      ),
+    );
+    const resolved =
+      issue &&
+      ["verified_resolved", "closed", "unfixable"].includes(issue.status);
+
+    if (resolved) {
+      issuesResolved += 1;
+    }
+
+    effortActions += histories.filter((history) =>
+      effortStatuses.has(history.new_status),
+    ).length;
+    notFixedReturns += histories.filter(
+      (history) => history.new_status === "verification_failed",
+    ).length;
+
+    const earliestAssignedAt = Math.min(
+      ...assignments
+        .filter((assignment) => assignment.issueId === issueId)
+        .map((assignment) => getTimestampValue(assignment.assignedAt))
+        .filter((timestamp) => timestamp > 0),
+    );
+    const completedAt = getTimestampValue(terminalHistory?.created_at);
+
+    if (
+      Number.isFinite(earliestAssignedAt) &&
+      earliestAssignedAt > 0 &&
+      completedAt >= earliestAssignedAt
+    ) {
+      resolutionDurations.push(completedAt - earliestAssignedAt);
+    }
+  }
+
+  const issuesWorked = issueIds.length;
+  const hitRate = issuesWorked > 0 ? issuesResolved / issuesWorked : 0;
+  const unfixableHandled = issueIds.filter(
+    (issueId) => issuesById.get(issueId)?.status === "unfixable",
+  ).length;
+  const score = Math.max(
+    0,
+    Math.round(
+      issuesResolved * 100 +
+        effortActions * 10 +
+        unfixableHandled * 25 +
+        hitRate * 50 +
+        issuesWorked * 5 -
+        notFixedReturns * 15,
+    ),
+  );
+
+  return {
+    averageResolutionMs: getAverageScoreboardDuration(resolutionDurations),
+    effortActions,
+    hitRate,
+    issuesResolved,
+    issuesWorked,
+    notFixedReturns,
+    score,
+    technicianName,
+  };
 }
 
 function isDirectorReturnNotice(notice: TechnicianNotice) {
@@ -426,6 +593,12 @@ export default function TechnicianConsolePage() {
   >(null);
   const [directorReturnPopup, setDirectorReturnPopup] =
     useState<DirectorReturnPopup | null>(null);
+  const [sessionEndedPopup, setSessionEndedPopup] = useState<{
+    entries: TechnicianScoreboardEntry[];
+    error: string | null;
+    isLoading: boolean;
+    sessionId: string;
+  } | null>(null);
   const [handoffNotes, setHandoffNotes] = useState<Record<string, string>>(
     {},
   );
@@ -442,15 +615,19 @@ export default function TechnicianConsolePage() {
   const noticeAlertSnapshot = useRef<Set<string> | null>(null);
   const pendingDirectorReturnNoticeIds = useRef<Set<string>>(new Set());
   const handledDirectorReturnNoticeIds = useRef<Set<string>>(new Set());
+  const sessionStatusSnapshot = useRef<string | null>(null);
+  const shownEndedSessionIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     issueAlertSnapshot.current = null;
     noticeAlertSnapshot.current = null;
     pendingDirectorReturnNoticeIds.current = new Set();
     handledDirectorReturnNoticeIds.current = new Set();
+    sessionStatusSnapshot.current = null;
 
     const resetId = window.setTimeout(() => {
       setDirectorReturnPopup(null);
+      setSessionEndedPopup(null);
     }, 0);
 
     return () => window.clearTimeout(resetId);
@@ -476,6 +653,148 @@ export default function TechnicianConsolePage() {
       updateQueryDiagnostic("map assist data", { status, error });
     },
     [updateQueryDiagnostic],
+  );
+
+  const loadSessionScoreboard = useCallback(
+    async (sessionId: string) => {
+      if (!activeShow) {
+        return {
+          entries: [] as TechnicianScoreboardEntry[],
+          error: "No active show available for scoreboard.",
+        };
+      }
+
+      const { data: issueData, error: issueError } = await supabase
+        .from("issues")
+        .select("id, status, created_at")
+        .eq("show_id", activeShow.id)
+        .eq("session_id", sessionId);
+
+      if (issueError) {
+        return { entries: [], error: issueError.message };
+      }
+
+      const issues = (issueData ?? []) as ScoreboardIssue[];
+      const issueIds = issues.map((issue) => issue.id);
+      const [
+        historyResult,
+        assignmentResult,
+        additionalAssignmentResult,
+        noticeResult,
+      ] = await Promise.all([
+        issueIds.length > 0
+          ? supabase
+              .from("issue_status_history")
+              .select("issue_id, new_status, created_at")
+              .in("issue_id", issueIds)
+              .order("created_at", { ascending: true })
+          : Promise.resolve({ data: [], error: null }),
+        supabase
+          .from("issue_assignments")
+          .select("issue_id, technician_name, assigned_at")
+          .eq("show_id", activeShow.id)
+          .eq("session_id", sessionId),
+        supabase
+          .from("additional_technician_assignments")
+          .select("issue_id, additional_technician_name, assigned_at")
+          .eq("show_id", activeShow.id)
+          .eq("session_id", sessionId),
+        supabase
+          .from("technician_notices")
+          .select("technician_name")
+          .eq("show_id", activeShow.id)
+          .eq("session_id", sessionId),
+      ]);
+      const queryError =
+        historyResult.error ??
+        assignmentResult.error ??
+        additionalAssignmentResult.error ??
+        noticeResult.error;
+
+      if (queryError) {
+        return { entries: [], error: queryError.message };
+      }
+
+      const histories = (historyResult.data ?? []) as ScoreboardHistory[];
+      const primaryAssignments =
+        (assignmentResult.data ?? []) as ScoreboardAssignment[];
+      const additionalAssignments =
+        (additionalAssignmentResult.data ??
+          []) as ScoreboardAdditionalAssignment[];
+      const notices = (noticeResult.data ?? []) as ScoreboardNotice[];
+      const historiesByIssue = new Map<string, ScoreboardHistory[]>();
+      const issuesById = new Map(issues.map((issue) => [issue.id, issue]));
+      const assignmentsByTechnician = new Map<
+        string,
+        { assignedAt: string | null; issueId: string }[]
+      >();
+
+      histories.forEach((history) => {
+        historiesByIssue.set(history.issue_id, [
+          ...(historiesByIssue.get(history.issue_id) ?? []),
+          history,
+        ]);
+      });
+
+      const addAssignment = (
+        technicianName: string | null | undefined,
+        issueId: string,
+        assignedAt: string | null,
+      ) => {
+        const normalizedName = technicianName?.trim();
+
+        if (!normalizedName) {
+          return;
+        }
+
+        assignmentsByTechnician.set(normalizedName, [
+          ...(assignmentsByTechnician.get(normalizedName) ?? []),
+          { assignedAt, issueId },
+        ]);
+      };
+
+      primaryAssignments.forEach((assignment) =>
+        addAssignment(
+          assignment.technician_name,
+          assignment.issue_id,
+          assignment.assigned_at,
+        ),
+      );
+      additionalAssignments.forEach((assignment) =>
+        addAssignment(
+          assignment.additional_technician_name,
+          assignment.issue_id,
+          assignment.assigned_at,
+        ),
+      );
+      notices.forEach((notice) => {
+        if (!assignmentsByTechnician.has(notice.technician_name)) {
+          assignmentsByTechnician.set(notice.technician_name, []);
+        }
+      });
+
+      const entries = [...assignmentsByTechnician.entries()]
+        .map(([technicianName, assignments]) =>
+          calculateScoreboardEntry({
+            assignments,
+            historiesByIssue,
+            issuesById,
+            technicianName,
+          }),
+        )
+        .sort((left, right) => {
+          if (right.score !== left.score) {
+            return right.score - left.score;
+          }
+          if (right.issuesResolved !== left.issuesResolved) {
+            return right.issuesResolved - left.issuesResolved;
+          }
+          return right.issuesWorked - left.issuesWorked;
+        });
+
+      return { entries, error: null };
+    },
+    [activeShow, supabase],
   );
 
   const fetchIssues = useCallback(async () => {
@@ -614,6 +933,76 @@ export default function TechnicianConsolePage() {
     selectedTechnician,
     supabase,
   ]);
+
+  useEffect(() => {
+    if (
+      !activeShow ||
+      !activeSession ||
+      activeSession.show_id !== activeShow.id
+    ) {
+      sessionStatusSnapshot.current = null;
+      return;
+    }
+
+    let isCancelled = false;
+
+    const checkSessionStatus = async () => {
+      const { data, error } = await supabase
+        .from("continuity_sessions")
+        .select("id, status, ended_at")
+        .eq("id", activeSession.id)
+        .eq("show_id", activeShow.id)
+        .maybeSingle();
+
+      if (isCancelled || error || !data) {
+        return;
+      }
+
+      const sessionRecord = data as SessionStatusRecord;
+      const previousStatus = sessionStatusSnapshot.current;
+      sessionStatusSnapshot.current = sessionRecord.status;
+
+      if (
+        previousStatus === "active" &&
+        sessionRecord.status === "ended" &&
+        !shownEndedSessionIds.current.has(sessionRecord.id)
+      ) {
+        shownEndedSessionIds.current.add(sessionRecord.id);
+        playWarning();
+        vibrate([120, 60, 120]);
+        setSessionEndedPopup({
+          entries: [],
+          error: null,
+          isLoading: true,
+          sessionId: sessionRecord.id,
+        });
+
+        const { entries, error: scoreboardError } =
+          await loadSessionScoreboard(sessionRecord.id);
+
+        if (isCancelled) {
+          return;
+        }
+
+        setSessionEndedPopup({
+          entries,
+          error: scoreboardError,
+          isLoading: false,
+          sessionId: sessionRecord.id,
+        });
+      }
+    };
+
+    void checkSessionStatus();
+    const intervalId = window.setInterval(() => {
+      void checkSessionStatus();
+    }, 5000);
+
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeSession, activeShow, loadSessionScoreboard, supabase]);
 
   const refreshLatestNotes = useCallback(
     async (issueRecords: TechnicianIssue[]) => {
@@ -1735,6 +2124,12 @@ export default function TechnicianConsolePage() {
   const directorReturnContent = directorReturnPopup
     ? getDirectorReturnPopupContent(directorReturnPopup)
     : null;
+  const closeScoreboard = () => {
+    setSessionEndedPopup(null);
+    setActiveContinuitySession(null);
+    setActiveShow(null);
+    router.push("/shows");
+  };
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 pb-28 pt-0 md:gap-6 md:px-8 md:py-6 lg:py-8">
@@ -2417,6 +2812,144 @@ export default function TechnicianConsolePage() {
                 type="button"
               >
                 Dismiss
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {sessionEndedPopup ? (
+        <div
+          aria-labelledby="technician-scoreboard-title"
+          aria-modal="true"
+          className="fixed inset-0 z-[74] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm md:hidden"
+          role="dialog"
+        >
+          <section className="flex max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-[#8b5cf6]/45 bg-[#0b1020] shadow-2xl shadow-black/70">
+            <div className="border-b border-white/10 p-5">
+              <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#a78bfa]">
+                Session Complete
+              </p>
+              <h2
+                className="mt-3 text-2xl font-extrabold leading-8 text-white"
+                id="technician-scoreboard-title"
+              >
+                The Director has ended this continuity session.
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-[#cbd5e1]">
+                Here&apos;s the post-session Tech Scoreboard.
+              </p>
+            </div>
+
+            <div className="grid gap-3 overflow-y-auto p-4">
+              {sessionEndedPopup.isLoading ? (
+                <p className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-5 text-center text-sm font-semibold text-[#94a3b8]">
+                  Calculating scoreboard...
+                </p>
+              ) : sessionEndedPopup.error ? (
+                <p className="rounded-lg border border-[#f59e0b]/45 bg-[#2a1c06] p-4 text-sm font-semibold leading-6 text-[#fde68a]">
+                  Scoreboard data is incomplete: {sessionEndedPopup.error}
+                </p>
+              ) : sessionEndedPopup.entries.length === 0 ||
+                sessionEndedPopup.entries.every(
+                  (entry) => entry.issuesWorked === 0,
+                ) ? (
+                <p className="rounded-lg border border-dashed border-white/15 bg-[#070b18] p-5 text-center text-sm font-semibold text-[#94a3b8]">
+                  No technician activity recorded for this session.
+                </p>
+              ) : (
+                sessionEndedPopup.entries.map((entry, index) => {
+                  const rank = index + 1;
+                  const rankClassName =
+                    rank === 1
+                      ? "border-[#facc15]/60 bg-[#2a2105] text-[#fde68a]"
+                      : rank === 2
+                        ? "border-[#cbd5e1]/50 bg-[#1f2937] text-[#e2e8f0]"
+                        : rank === 3
+                          ? "border-[#fb923c]/55 bg-[#2b160c] text-[#fed7aa]"
+                          : "border-white/10 bg-[#070b18] text-[#dbe4ef]";
+                  const rankLabel =
+                    rank === 1
+                      ? "1st"
+                      : rank === 2
+                        ? "2nd"
+                        : rank === 3
+                          ? "3rd"
+                          : `${rank}th`;
+
+                  return (
+                    <article
+                      className={`rounded-xl border p-4 ${rankClassName}`}
+                      key={entry.technicianName}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-[0.14em] opacity-80">
+                            {rankLabel} Place
+                          </p>
+                          <h3 className="mt-1 text-xl font-extrabold">
+                            {getTemporaryTechnicianLabel(
+                              entry.technicianName,
+                            )}
+                          </h3>
+                        </div>
+                        <span className="rounded-lg border border-current/30 bg-black/20 px-3 py-2 text-lg font-black">
+                          {entry.score}
+                        </span>
+                      </div>
+                      <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                        <div>
+                          <dt className="text-xs uppercase opacity-70">
+                            Issues Worked
+                          </dt>
+                          <dd className="text-lg font-bold">
+                            {entry.issuesWorked}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs uppercase opacity-70">
+                            Resolved
+                          </dt>
+                          <dd className="text-lg font-bold">
+                            {entry.issuesResolved}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs uppercase opacity-70">
+                            Avg Resolution
+                          </dt>
+                          <dd className="font-bold">
+                            {formatScoreboardDuration(
+                              entry.averageResolutionMs,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs uppercase opacity-70">
+                            Hit Rate
+                          </dt>
+                          <dd className="font-bold">
+                            {Math.round(entry.hitRate * 100)}%
+                          </dd>
+                        </div>
+                      </dl>
+                      <p className="mt-3 text-xs font-semibold opacity-75">
+                        Effort bonuses: {entry.effortActions} | Not-fixed
+                        returns: {entry.notFixedReturns}
+                      </p>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="border-t border-white/10 p-4">
+              <button
+                className="min-h-14 w-full touch-manipulation rounded-lg bg-[#6d28d9] px-5 py-3 text-lg font-bold text-white transition active:bg-[#7c3aed]"
+                onClick={closeScoreboard}
+                type="button"
+              >
+                Close Scoreboard
               </button>
             </div>
           </section>
