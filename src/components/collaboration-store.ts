@@ -233,7 +233,7 @@ export async function createHandoffNotices({
     {
       issue_id: payload.issueId,
       message,
-      notice_type: "handoff_outgoing",
+      notice_type: "reassigned",
       session_id: sessionId,
       show_id: showId,
       status: "unread",
@@ -243,7 +243,7 @@ export async function createHandoffNotices({
     {
       issue_id: payload.issueId,
       message,
-      notice_type: "handoff_incoming",
+      notice_type: "handoff",
       session_id: sessionId,
       show_id: showId,
       status: "unread",
@@ -304,7 +304,7 @@ export async function updateIncomingHandoffNotice({
     .update({ message })
     .eq("issue_id", issueId)
     .eq("technician_name", technicianId)
-    .eq("notice_type", "handoff_incoming")
+    .in("notice_type", ["handoff_incoming", "handoff"])
     .eq("status", "unread");
 
   if (!result.error) {
@@ -559,13 +559,17 @@ export function useTechnicianNotices(
 ) {
   const [notices, setNotices] = useState<TechnicianNotice[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     if (!showId) {
       setNotices([]);
       setError(null);
+      setIsLoading(false);
       return;
     }
+
+    setIsLoading(true);
 
     const supabase = createSupabaseBrowserClient();
     let query = supabase
@@ -583,17 +587,27 @@ export function useTechnicianNotices(
       query = query.is("session_id", null);
     }
 
-    const { data, error: queryError } = await query.order("created_at", {
-      ascending: false,
-    });
+    try {
+      const { data, error: queryError } = await query.order("created_at", {
+        ascending: false,
+      });
 
-    if (queryError) {
-      setError(queryError.message);
-      return;
+      if (queryError) {
+        setError(queryError.message);
+        return;
+      }
+
+      setNotices((data ?? []) as TechnicianNotice[]);
+      setError(null);
+    } catch (queryError) {
+      setError(
+        queryError instanceof Error
+          ? queryError.message
+          : "Unknown technician notice fetch failure.",
+      );
+    } finally {
+      setIsLoading(false);
     }
-
-    setNotices((data ?? []) as TechnicianNotice[]);
-    setError(null);
   }, [sessionId, showId, technicianId]);
 
   useEffect(() => {
@@ -609,5 +623,5 @@ export function useTechnicianNotices(
     };
   }, [refresh]);
 
-  return { error, notices, refresh };
+  return { error, isLoading, notices, refresh };
 }

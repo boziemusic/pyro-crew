@@ -1209,7 +1209,7 @@ export default function DirectorConsolePage() {
         : await createTechnicianNotice({
             issueId: issue.id,
             message: `Issue reassigned from ${getTemporaryTechnicianLabel(originalTechnician)}.`,
-            noticeType: "reassignment",
+            noticeType: "reassigned",
             sessionId:
               issue.session_id ?? sessionForActiveShow?.id ?? null,
             showId: activeShow.id,

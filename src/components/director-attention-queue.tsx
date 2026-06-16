@@ -98,6 +98,32 @@ const statusLabels: Record<AttentionStatus, string> = {
   additional_technician_requested: "Additional Technician",
 };
 
+function getDirectorReturnNoticeType({
+  newStatus,
+  notFixedNote,
+}: {
+  newStatus: string;
+  notFixedNote: string | null;
+}) {
+  if (newStatus === "verified_resolved" || newStatus === "closed") {
+    return "verification_passed";
+  }
+
+  if (newStatus === "retrieving_parts") {
+    return "retrieving_parts";
+  }
+
+  if (newStatus === "unfixable") {
+    return "unfixable";
+  }
+
+  if (notFixedNote) {
+    return "verification_failed";
+  }
+
+  return "director_response";
+}
+
 export function DirectorAttentionQueue({
   onIssueUpdated,
 }: {
@@ -320,6 +346,7 @@ export function DirectorAttentionQueue({
     transitionNote: string | null = null,
     closeAsUnfixable = false,
     notFixedNote: string | null = null,
+    noticeTypeOverride: string | null = null,
   ) => {
     setUpdatingIssueId(issue.id);
     setFeedback(null);
@@ -466,10 +493,16 @@ export function DirectorAttentionQueue({
         [...noticeRecipients].map((technicianId) =>
           createTechnicianNotice({
             issueId: issue.id,
-            message: transitionNote,
-            noticeType: isResolution
-              ? "resolution"
-              : "director_response",
+            message:
+              notFixedNote && !transitionNote?.trim()
+                ? null
+                : transitionNote?.trim() || null,
+            noticeType:
+              noticeTypeOverride ??
+              getDirectorReturnNoticeType({
+                newStatus,
+                notFixedNote,
+              }),
             sessionId:
               activeSession?.show_id === activeShow.id
                 ? activeSession.id
@@ -552,6 +585,9 @@ export function DirectorAttentionQueue({
       issue.latest_note?.startsWith("Not Fixed")
         ? `${issue.latest_note} ${additionalTechnicianNote}`
         : additionalTechnicianNote,
+      false,
+      null,
+      null,
     );
 
     if (!wasUpdated) {
@@ -568,17 +604,8 @@ export function DirectorAttentionQueue({
       const noticeResults = await Promise.all([
         createTechnicianNotice({
           issueId: issue.id,
-          message: `${technicianLabel} was assigned to help you.`,
-          noticeType: "additional_help_assigned",
-          sessionId,
-          showId: activeShow.id,
-          technicianId: primaryTechnician,
-          title: "Additional Help Assigned",
-        }),
-        createTechnicianNotice({
-          issueId: issue.id,
-          message: `Help ${primaryTechnicianLabel} with this issue.`,
-          noticeType: "additional_assignment",
+          message: null,
+          noticeType: "additional_tech_approved",
           sessionId,
           showId: activeShow.id,
           technicianId,
@@ -806,6 +833,9 @@ export function DirectorAttentionQueue({
                             issue,
                             "assigned",
                             declineNote,
+                            false,
+                            null,
+                            "additional_tech_declined",
                           );
                         }}
                         type="button"

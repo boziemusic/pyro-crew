@@ -21,6 +21,7 @@ import {
   formatIssueLabel,
   getIssueStatusClassName,
   IssueIdentifiers,
+  ISSUE_IDENTIFIER_VALUE_CLASS_NAME,
 } from "@/components/issue-identifiers";
 import {
   getTemporaryTechnicianLabel,
@@ -38,6 +39,7 @@ import {
   acknowledgeTechnicianNotice,
   fetchActiveAdditionalTechnicianAssignments,
   parseHandoffNoticePayload,
+  type TechnicianNotice,
   type HandoffNoticePayload,
   updateIncomingHandoffNotice,
   useTechnicianNotices,
@@ -105,6 +107,21 @@ type SharedHandoff = HandoffNoticePayload & {
   id: string;
   reassignedAt: string;
   handoffNote: string | null;
+};
+
+type DirectorReturnPopup = {
+  issue: TechnicianIssue;
+  note: string | null;
+  noticeId: string;
+  noticeType: string;
+  previousStatus: string | null;
+  statusLabel: string;
+};
+
+type DirectorReturnPopupContent = {
+  headline: string;
+  note: string | null;
+  subtext: string | null;
 };
 
 const initialQueryDiagnostics: Record<
@@ -183,9 +200,169 @@ const actionConfirmationMessages: Record<string, string> = {
   awaiting_verification: "Verification request sent to the Director.",
 };
 
+const directorReturnNoticeTypes = new Set([
+  "verification_passed",
+  "verification_failed",
+  "retrieving_parts",
+  "director_response",
+  "additional_tech_approved",
+  "additional_tech_declined",
+  "unfixable",
+  "reassigned",
+  "handoff",
+  // Legacy notice types remain readable for older unread records.
+  "additional_help_assigned",
+  "additional_assignment",
+  "handoff_incoming",
+  "handoff_outgoing",
+  "reassignment",
+  "resolution",
+]);
+
+const resolutionNoticeTypes = new Set([
+  "resolution",
+  "verification_passed",
+  "unfixable",
+]);
+
 function getTimestampValue(value: string | null | undefined) {
   const timestamp = value ? Date.parse(value) : Number.NaN;
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function isDirectorReturnNotice(notice: TechnicianNotice) {
+  return (
+    Boolean(notice.issue_id) &&
+    directorReturnNoticeTypes.has(notice.notice_type)
+  );
+}
+
+function getAdditionalHelperName(message: string | null) {
+  const match =
+    message?.match(/^(.+?)\s+was assigned to help you\./i) ??
+    message?.match(/^Additional technician\s+(.+?)\s+assigned/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+function humanizeNoticeType(value: string) {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function getDirectorReturnPopupContent(
+  popup: DirectorReturnPopup,
+): DirectorReturnPopupContent {
+  const note = popup.note?.trim() || null;
+
+  if (
+    popup.noticeType === "verification_passed" ||
+    (popup.noticeType === "resolution" &&
+      popup.issue.status === "verified_resolved")
+  ) {
+    return {
+      headline: "Issue Fixed!",
+      note: null,
+      subtext: "The Director confirmed your repair.",
+    };
+  }
+
+  if (popup.noticeType === "verification_failed") {
+    return {
+      headline: "Not Fixed. Recheck This Issue.",
+      note,
+      subtext: note
+        ? null
+        : "The Director is sending this back for another look.",
+    };
+  }
+
+  if (popup.noticeType === "retrieving_parts") {
+    return {
+      headline: "The Director wants you to Retrieve Parts!",
+      note,
+      subtext: null,
+    };
+  }
+
+  if (
+    popup.noticeType === "unfixable" ||
+    (popup.noticeType === "resolution" &&
+      popup.issue.status === "unfixable")
+  ) {
+    return {
+      headline: "Marking this issue unfixable. Move on.",
+      note,
+      subtext: null,
+    };
+  }
+
+  if (
+    popup.noticeType === "additional_tech_approved" ||
+    popup.noticeType === "additional_help_assigned" ||
+    popup.noticeType === "additional_assignment"
+  ) {
+    const helperName = getAdditionalHelperName(popup.note);
+    return {
+      headline: helperName
+        ? `The Director is sending ${helperName} to help you.`
+        : "The Director is sending help to you.",
+      note,
+      subtext: null,
+    };
+  }
+
+  if (popup.noticeType === "additional_tech_declined") {
+    return {
+      headline:
+        "The Director responded to your request for another technician.",
+      note,
+      subtext: note
+        ? null
+        : "No additional technician is being sent right now.",
+    };
+  }
+
+  if (popup.noticeType === "director_response") {
+    return {
+      headline: "The Director responded to your request.",
+      note,
+      subtext: null,
+    };
+  }
+
+  if (
+    popup.noticeType === "reassigned" ||
+    popup.noticeType === "reassignment" ||
+    popup.noticeType === "handoff_outgoing"
+  ) {
+    return {
+      headline: "This issue has been reassigned.",
+      note,
+      subtext: null,
+    };
+  }
+
+  if (
+    popup.noticeType === "handoff" ||
+    popup.noticeType === "handoff_incoming"
+  ) {
+    return {
+      headline: "You have a handoff update.",
+      note,
+      subtext: null,
+    };
+  }
+
+  return {
+    headline: "The Director updated your issue.",
+    note: null,
+    subtext:
+      popup.noticeType && popup.noticeType !== "director_response"
+        ? humanizeNoticeType(popup.noticeType)
+        : popup.statusLabel,
+  };
 }
 
 export default function TechnicianConsolePage() {
@@ -196,6 +373,7 @@ export default function TechnicianConsolePage() {
   const selectedTechnician = useSelectedTemporaryTechnician();
   const {
     error: noticesError,
+    isLoading: noticesLoading,
     notices,
     refresh: refreshNotices,
   } = useTechnicianNotices(
@@ -246,6 +424,8 @@ export default function TechnicianConsolePage() {
   const [actionConfirmation, setActionConfirmation] = useState<
     string | null
   >(null);
+  const [directorReturnPopup, setDirectorReturnPopup] =
+    useState<DirectorReturnPopup | null>(null);
   const [handoffNotes, setHandoffNotes] = useState<Record<string, string>>(
     {},
   );
@@ -260,10 +440,20 @@ export default function TechnicianConsolePage() {
   const hasSelectedMobileSection = useRef(false);
   const issueAlertSnapshot = useRef<Map<string, string> | null>(null);
   const noticeAlertSnapshot = useRef<Set<string> | null>(null);
+  const pendingDirectorReturnNoticeIds = useRef<Set<string>>(new Set());
+  const handledDirectorReturnNoticeIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     issueAlertSnapshot.current = null;
     noticeAlertSnapshot.current = null;
+    pendingDirectorReturnNoticeIds.current = new Set();
+    handledDirectorReturnNoticeIds.current = new Set();
+
+    const resetId = window.setTimeout(() => {
+      setDirectorReturnPopup(null);
+    }, 0);
+
+    return () => window.clearTimeout(resetId);
   }, [activeSession?.id, activeShow?.id, selectedTechnician]);
 
   const updateQueryDiagnostic = useCallback(
@@ -781,7 +971,9 @@ export default function TechnicianConsolePage() {
   const resolutionNotices = useMemo(() => {
     const resolutionIssueIds = new Set(
       notices
-        .filter((notice) => notice.notice_type === "resolution")
+        .filter((notice) =>
+          resolutionNoticeTypes.has(notice.notice_type),
+        )
         .map((notice) => notice.issue_id)
         .filter((issueId): issueId is string => Boolean(issueId)),
     );
@@ -842,7 +1034,10 @@ export default function TechnicianConsolePage() {
   const outgoingHandoffNotices = useMemo(
     () =>
       notices.flatMap((notice) => {
-        if (notice.notice_type !== "handoff_outgoing") {
+        if (
+          notice.notice_type !== "handoff_outgoing" &&
+          notice.notice_type !== "reassigned"
+        ) {
           return [];
         }
 
@@ -862,7 +1057,10 @@ export default function TechnicianConsolePage() {
   const incomingHandoffNotices = useMemo(
     () =>
       notices.flatMap((notice) => {
-        if (notice.notice_type !== "handoff_incoming") {
+        if (
+          notice.notice_type !== "handoff_incoming" &&
+          notice.notice_type !== "handoff"
+        ) {
           return [];
         }
 
@@ -880,19 +1078,75 @@ export default function TechnicianConsolePage() {
   );
 
   useEffect(() => {
+    if (noticesLoading) {
+      return;
+    }
+
     const nextSnapshot = new Set(notices.map((notice) => notice.id));
     const previousSnapshot = noticeAlertSnapshot.current;
+    const newNotices = previousSnapshot
+      ? notices.filter((notice) => !previousSnapshot.has(notice.id))
+      : [];
 
-    if (
-      previousSnapshot &&
-      notices.some((notice) => !previousSnapshot.has(notice.id))
-    ) {
+    if (newNotices.length > 0) {
       playWarning();
       vibrate([120, 60, 120]);
+      void refreshIssues();
+
+      newNotices
+        .filter(isDirectorReturnNotice)
+        .forEach((notice) => {
+          if (
+            !handledDirectorReturnNoticeIds.current.has(notice.id)
+          ) {
+            pendingDirectorReturnNoticeIds.current.add(notice.id);
+          }
+        });
     }
 
     noticeAlertSnapshot.current = nextSnapshot;
-  }, [notices]);
+  }, [notices, noticesLoading, refreshIssues]);
+
+  useEffect(() => {
+    if (directorReturnPopup) {
+      return;
+    }
+
+    const pendingNotice = notices.find(
+      (notice) =>
+        pendingDirectorReturnNoticeIds.current.has(notice.id) &&
+        !handledDirectorReturnNoticeIds.current.has(notice.id) &&
+        isDirectorReturnNotice(notice),
+    );
+
+    if (!pendingNotice?.issue_id) {
+      return;
+    }
+
+    const matchingIssue = issues.find(
+      (issue) => issue.id === pendingNotice.issue_id,
+    );
+
+    if (!matchingIssue) {
+      return;
+    }
+
+    pendingDirectorReturnNoticeIds.current.delete(pendingNotice.id);
+    handledDirectorReturnNoticeIds.current.add(pendingNotice.id);
+    setDirectorReturnPopup({
+      issue: matchingIssue,
+      note: pendingNotice.message?.trim() || null,
+      noticeId: pendingNotice.id,
+      noticeType: pendingNotice.notice_type,
+      previousStatus: latestPreviousStatuses[matchingIssue.id] ?? null,
+      statusLabel: formatIssueLabel(matchingIssue.status),
+    });
+  }, [
+    directorReturnPopup,
+    issues,
+    latestPreviousStatuses,
+    notices,
+  ]);
 
   useEffect(() => {
     const updateId = window.setTimeout(() => {
@@ -1160,6 +1414,42 @@ export default function TechnicianConsolePage() {
     );
   };
 
+  const getMobileSectionForIssue = (issue: TechnicianIssue) => {
+    if (
+      resolutionStatuses.has(issue.status) &&
+      resolutionNotices.some((noticeIssue) => noticeIssue.id === issue.id)
+    ) {
+      return "resolutions" satisfies MobileSection;
+    }
+
+    if (workingIssues.some((workingIssue) => workingIssue.id === issue.id)) {
+      return "working" satisfies MobileSection;
+    }
+
+    if (
+      awaitingDirectorIssues.some(
+        (awaitingIssue) => awaitingIssue.id === issue.id,
+      )
+    ) {
+      return "awaiting-director" satisfies MobileSection;
+    }
+
+    return "assigned" satisfies MobileSection;
+  };
+
+  const showMobileIssue = (issue: TechnicianIssue) => {
+    hasSelectedMobileSection.current = true;
+    setMobileSection(getMobileSectionForIssue(issue));
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-mobile-issue-id="${issue.id}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+  };
+
   const showMobileWorkingIssue = (issueId: string) => {
     hasSelectedMobileSection.current = true;
     setMobileSection("working");
@@ -1381,6 +1671,7 @@ export default function TechnicianConsolePage() {
   const renderResolutionNotice = (issue: TechnicianIssue) => (
     <article
       className="rounded-lg border border-white/10 bg-[#070b18] p-4"
+      data-mobile-issue-id={issue.id}
       key={issue.id}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1412,7 +1703,7 @@ export default function TechnicianConsolePage() {
           onClick={() => {
             const matchingNotices = notices.filter(
               (notice) =>
-                notice.notice_type === "resolution" &&
+                resolutionNoticeTypes.has(notice.notice_type) &&
                 notice.issue_id === issue.id,
             );
             void Promise.all(
@@ -1440,6 +1731,10 @@ export default function TechnicianConsolePage() {
       </div>
     </article>
   );
+
+  const directorReturnContent = directorReturnPopup
+    ? getDirectorReturnPopupContent(directorReturnPopup)
+    : null;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 pb-28 pt-0 md:gap-6 md:px-8 md:py-6 lg:py-8">
@@ -2047,6 +2342,86 @@ export default function TechnicianConsolePage() {
           );
         })}
       </nav>
+
+      {directorReturnPopup && directorReturnContent ? (
+        <div
+          aria-labelledby="technician-director-return-title"
+          aria-modal="true"
+          className="fixed inset-0 z-[72] flex items-center justify-center bg-black/82 p-5 backdrop-blur-sm md:hidden"
+          role="dialog"
+        >
+          <section className="w-full max-w-md rounded-xl border border-[#f59e0b]/45 bg-[#0b1020] p-6 shadow-2xl shadow-black/60">
+            <p
+              className="text-sm font-bold uppercase tracking-[0.16em] text-[#fde68a]"
+              id="technician-director-return-title"
+            >
+              Director Update
+            </p>
+            <p className="mt-4 text-2xl font-extrabold leading-8 text-white">
+              {directorReturnContent.headline}
+            </p>
+            {directorReturnContent.subtext ? (
+              <p className="mt-3 text-base font-semibold leading-7 text-[#dbe4ef]">
+                {directorReturnContent.subtext}
+              </p>
+            ) : null}
+            {directorReturnContent.note ? (
+              <div className="mt-4 rounded-lg border border-[#f59e0b]/35 bg-[#2a1c06]/70 p-4">
+                <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#fde68a]">
+                  Director Note
+                </p>
+                <p className="mt-2 text-base font-semibold leading-7 text-white">
+                  {directorReturnContent.note}
+                </p>
+              </div>
+            ) : null}
+            <p className="mt-4 text-base leading-7 text-[#dbe4ef]">
+              Issue CH{" "}
+              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+                {directorReturnPopup.issue.channel_number}
+              </strong>
+              <span className="text-[#64748b]"> | </span>
+              Cue(s){" "}
+              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+                {directorReturnPopup.issue.cue_value}
+              </strong>
+            </p>
+            {directorReturnPopup.issue.position_name ? (
+              <p className="mt-2 text-base leading-7 text-[#dbe4ef]">
+                Location:{" "}
+                <strong className="font-bold text-[#4ade80]">
+                  {directorReturnPopup.issue.position_name}
+                </strong>
+              </p>
+            ) : null}
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
+              <button
+                autoFocus
+                className="min-h-14 touch-manipulation rounded-lg bg-[#6d28d9] px-5 py-3 text-lg font-bold text-white transition active:bg-[#7c3aed]"
+                onClick={() => {
+                  showMobileIssue(directorReturnPopup.issue);
+                  setDirectorReturnPopup(null);
+                }}
+                type="button"
+              >
+                Go to Issue
+              </button>
+              <button
+                className="min-h-14 touch-manipulation rounded-lg border border-white/15 bg-[#111827] px-5 py-3 text-lg font-bold text-[#dbe4ef] transition active:bg-white/10"
+                onClick={() => {
+                  handledDirectorReturnNoticeIds.current.add(
+                    directorReturnPopup.noticeId,
+                  );
+                  setDirectorReturnPopup(null);
+                }}
+                type="button"
+              >
+                Dismiss
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {actionConfirmation ? (
         <div
