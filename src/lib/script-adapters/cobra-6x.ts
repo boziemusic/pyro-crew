@@ -4,7 +4,7 @@ import type {
   ScriptParseResult,
 } from "./types";
 
-function normalizeHeader(value: string) {
+export function normalizeHeader(value: string) {
   return value
     .trim()
     .toLowerCase()
@@ -12,7 +12,7 @@ function normalizeHeader(value: string) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-function parseCsvRecords(contents: string) {
+export function parseCsvRecords(contents: string, includeBlankRows = false) {
   const records: string[][] = [];
   const errors: string[] = [];
   let record: string[] = [];
@@ -61,19 +61,21 @@ function parseCsvRecords(contents: string) {
   }
 
   return {
-    records: records.filter((row) =>
-      row.some((value) => value.trim().length > 0),
-    ),
+    records: includeBlankRows
+      ? records
+      : records.filter((row) =>
+          row.some((value) => value.trim().length > 0),
+        ),
     errors,
   };
 }
 
-function optionalValue(value: string | undefined) {
+export function optionalValue(value: string | undefined) {
   const trimmed = value?.trim() ?? "";
   return trimmed || null;
 }
 
-function parseEventDescription(value: string | undefined) {
+export function parseEventDescription(value: string | undefined) {
   const description = optionalValue(value);
 
   if (!description) {

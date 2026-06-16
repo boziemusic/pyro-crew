@@ -1,4 +1,4 @@
-export type ScriptAdapterKey = "cobra_6x";
+export type ScriptAdapterKey = "cobra_6x" | "cobra_7x";
 
 export type ParsedScriptRow = {
   channel_number: number | null;

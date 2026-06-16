@@ -82,6 +82,7 @@ const fieldClassName =
 
 const firingSystemLabels: Record<FiringSystem, string> = {
   cobra_6x: "COBRA 6.X",
+  cobra_7x: "COBRA 7.X",
 };
 
 const SHOW_CODE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -1187,7 +1188,11 @@ function ConfiguredShowsWorkspace() {
                 value={firingSystem}
               >
                 <option value="">Not selected</option>
-                <option value="cobra_6x">COBRA 6.X</option>
+                {Object.values(SCRIPT_ADAPTERS).map((adapter) => (
+                  <option key={adapter.key} value={adapter.key}>
+                    {adapter.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="flex flex-col gap-2">
@@ -1467,7 +1472,11 @@ function ConfiguredShowsWorkspace() {
                           value={show.firing_system ?? ""}
                         >
                           <option value="">Not selected</option>
-                          <option value="cobra_6x">COBRA 6.X</option>
+                          {Object.values(SCRIPT_ADAPTERS).map((adapter) => (
+                            <option key={adapter.key} value={adapter.key}>
+                              {adapter.label}
+                            </option>
+                          ))}
                         </select>
                       </label>
 
