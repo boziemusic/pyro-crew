@@ -10,6 +10,12 @@ Optional custom sound files:
 - `additional-tech-requested-1.mp3`
 - `additional-tech-requested-2.mp3`
 - `additional-tech-requested-3.mp3`
+- `director-tech-joined-1.mp3`
+- `director-tech-joined-2.mp3`
+- `director-tech-joined-3.mp3`
+- `tech-joined-1.mp3`
+- `tech-joined-2.mp3`
+- `tech-joined-3.mp3`
 - `success.mp3`
 - `ui-click.mp3`
 - `warning.mp3`
