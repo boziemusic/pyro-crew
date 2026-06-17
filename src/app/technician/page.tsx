@@ -39,7 +39,7 @@ import {
   acknowledgeTechnicianNotice,
   fetchActiveAdditionalTechnicianAssignments,
   parseHandoffNoticePayload,
-  recordJoinedTechnician,
+  recordTechnicianHeartbeat,
   type TechnicianNotice,
   type HandoffNoticePayload,
   updateIncomingHandoffNotice,
@@ -1571,35 +1571,47 @@ export default function TechnicianConsolePage() {
     return () => window.clearTimeout(updateId);
   }, [markConnected, noticesError, noticesLoading, updateQueryDiagnostic]);
 
+  const sendHeartbeat = useCallback(async () => {
+    if (!activeShow || !activeSession) {
+      setConnectionStatus("disconnected");
+      return;
+    }
+
+    if (activeSession.show_id !== activeShow.id) {
+      setConnectionStatus("disconnected");
+      return;
+    }
+
+    const { error } = await recordTechnicianHeartbeat({
+      sessionId: activeSession.id,
+      showId: activeShow.id,
+      technicianId: selectedTechnician,
+    });
+
+    if (error) {
+      setConnectionStatus("disconnected");
+    } else {
+      markConnected();
+    }
+  }, [activeSession, activeShow, markConnected, selectedTechnician]);
+
   useEffect(() => {
     if (!activeShow || !activeSession) {
       return;
     }
 
-    const sendHeartbeat = async () => {
-      const { error } = await recordJoinedTechnician({
-        sessionId:
-          activeSession.show_id === activeShow.id
-            ? activeSession.id
-            : null,
-        showId: activeShow.id,
-        technicianId: selectedTechnician,
-      });
-
-      if (error) {
-        setConnectionStatus("disconnected");
-      } else {
-        markConnected();
-      }
-    };
-
-    void sendHeartbeat();
+    const initialHeartbeatId = window.setTimeout(() => {
+      void sendHeartbeat();
+    }, 0);
     const intervalId = window.setInterval(() => {
       void sendHeartbeat();
     }, 15000);
 
-    return () => window.clearInterval(intervalId);
-  }, [activeSession, activeShow, markConnected, selectedTechnician]);
+    return () => {
+      window.clearTimeout(initialHeartbeatId);
+      window.clearInterval(intervalId);
+    };
+  }, [activeSession, activeShow, sendHeartbeat]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -2189,8 +2201,11 @@ export default function TechnicianConsolePage() {
   };
   const refreshTechnicianConsole = async () => {
     setIsManuallyRefreshing(true);
-    await Promise.all([refreshIssues(), refreshNotices()]);
-    setIsManuallyRefreshing(false);
+    try {
+      await Promise.all([refreshIssues(), refreshNotices(), sendHeartbeat()]);
+    } finally {
+      setIsManuallyRefreshing(false);
+    }
   };
 
   return (

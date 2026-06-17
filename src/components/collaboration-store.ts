@@ -46,6 +46,10 @@ export type HandoffNoticePayload = {
 };
 
 const COLLABORATION_EVENT = "pyro-crew-collaboration-change";
+const TECHNICIAN_HEARTBEAT_DEVICE_STORAGE_KEY =
+  "pyro-crew-technician-heartbeat-device-id";
+
+let cachedHeartbeatDeviceId: string | null = null;
 
 function getTimestampValue(value: string | null | undefined) {
   const timestamp = value ? Date.parse(value) : Number.NaN;
@@ -56,6 +60,58 @@ function announceCollaborationChange() {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(COLLABORATION_EVENT));
   }
+}
+
+function createHeartbeatDeviceId() {
+  if (
+    typeof window !== "undefined" &&
+    window.crypto &&
+    "randomUUID" in window.crypto
+  ) {
+    return window.crypto.randomUUID();
+  }
+
+  return `device-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
+export function getTechnicianHeartbeatDeviceId() {
+  if (cachedHeartbeatDeviceId) {
+    return cachedHeartbeatDeviceId;
+  }
+
+  if (typeof window === "undefined") {
+    cachedHeartbeatDeviceId = createHeartbeatDeviceId();
+    return cachedHeartbeatDeviceId;
+  }
+
+  let stored: string | undefined;
+
+  try {
+    stored = window.localStorage
+      .getItem(TECHNICIAN_HEARTBEAT_DEVICE_STORAGE_KEY)
+      ?.trim();
+  } catch {
+    stored = undefined;
+  }
+
+  if (stored) {
+    cachedHeartbeatDeviceId = stored;
+    return cachedHeartbeatDeviceId;
+  }
+
+  cachedHeartbeatDeviceId = createHeartbeatDeviceId();
+  try {
+    window.localStorage.setItem(
+      TECHNICIAN_HEARTBEAT_DEVICE_STORAGE_KEY,
+      cachedHeartbeatDeviceId,
+    );
+  } catch {
+    // Locked-down browsers can reject localStorage; keep a tab-local id.
+  }
+
+  return cachedHeartbeatDeviceId;
 }
 
 export async function fetchActiveAdditionalTechnicianAssignments({
@@ -376,6 +432,43 @@ export async function recordJoinedTechnician({
   return { error: result.error };
 }
 
+export async function recordTechnicianHeartbeat({
+  sessionId,
+  showId,
+  technicianId,
+}: {
+  sessionId: string;
+  showId: string;
+  technicianId: TemporaryTechnicianId;
+}) {
+  const supabase = createSupabaseBrowserClient();
+  const now = new Date().toISOString();
+  const deviceId = getTechnicianHeartbeatDeviceId();
+
+  const result = await supabase
+    .from("technician_heartbeats")
+    .upsert(
+      {
+        device_id: deviceId,
+        last_seen_at: now,
+        session_id: sessionId,
+        show_id: showId,
+        technician_name: technicianId,
+        updated_at: now,
+      },
+      {
+        onConflict:
+          "show_id,session_id,technician_name,device_id",
+      },
+    );
+
+  if (!result.error) {
+    announceCollaborationChange();
+  }
+
+  return { error: result.error };
+}
+
 export async function fetchShowTechnicianNames({
   showId,
 }: {
@@ -500,13 +593,16 @@ export function useShowTechnicianPresence(
 
     const supabase = createSupabaseBrowserClient();
     let query = supabase
-      .from("technician_notices")
-      .select("technician_name, acknowledged_at, created_at")
-      .eq("show_id", showId)
-      .eq("notice_type", "technician_joined");
+      .from("technician_heartbeats")
+      .select("technician_name, last_seen_at")
+      .eq("show_id", showId);
 
     if (sessionId) {
       query = query.eq("session_id", sessionId);
+    } else {
+      setPresenceByTechnician({});
+      setError(null);
+      return;
     }
 
     const { data, error: queryError } = await query;
@@ -520,7 +616,7 @@ export function useShowTechnicianPresence(
 
     (data ?? []).forEach((row) => {
       const technicianName = row.technician_name?.trim();
-      const activeAt = row.acknowledged_at ?? row.created_at;
+      const activeAt = row.last_seen_at;
 
       if (!technicianName || !activeAt) {
         return;

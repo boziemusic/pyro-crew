@@ -111,6 +111,11 @@ type TechnicianPerformance = {
   averageCompletionMs: number | null;
 };
 
+type TechnicianConnectionStatus =
+  | "connected"
+  | "stale"
+  | "disconnected";
+
 type EndSessionSummary = {
   proposedEndAt: string;
   totalTechnicians: number;
@@ -184,6 +189,29 @@ const resolvedStatuses = new Set(["verified_resolved", "closed"]);
 function getTimestampValue(value: string | null | undefined) {
   const timestamp = value ? Date.parse(value) : Number.NaN;
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function getTechnicianConnectionStatus(
+  lastSeenAt: string | null | undefined,
+  now: number | null,
+): TechnicianConnectionStatus {
+  const lastSeen = getTimestampValue(lastSeenAt);
+
+  if (!lastSeen || !now) {
+    return "disconnected";
+  }
+
+  const ageMs = now - lastSeen;
+
+  if (ageMs <= 30000) {
+    return "connected";
+  }
+
+  if (ageMs <= 60000) {
+    return "stale";
+  }
+
+  return "disconnected";
 }
 
 function formatDateTime(value: string | null) {
@@ -884,11 +912,10 @@ export default function DirectorConsolePage() {
         return {
           ...technician,
           activeIssues,
-          isConnected:
-            getTimestampValue(presenceByTechnician[technician.id]) > 0 &&
-            (timerNow ?? 0) -
-              getTimestampValue(presenceByTechnician[technician.id]) <
-              30000,
+          connectionStatus: getTechnicianConnectionStatus(
+            presenceByTechnician[technician.id],
+            timerNow,
+          ),
           hasAttention: activeIssues.some(({ issue }) =>
             overviewAttentionStatuses.has(issue.status),
           ),
@@ -1701,9 +1728,9 @@ export default function DirectorConsolePage() {
         <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
           {technicianOverview.map((technician) => (
             <TechOverviewCard
+              connectionStatus={technician.connectionStatus}
               currentIssue={technician.currentIssue}
               hasAttention={technician.hasAttention}
-              isConnected={technician.isConnected}
               key={technician.id}
               loadCount={technician.activeIssues.length}
               now={timerNow}
@@ -2464,9 +2491,9 @@ function ReportRow({ label, value }: { label: string; value: string }) {
 }
 
 function TechOverviewCard({
+  connectionStatus,
   currentIssue,
   hasAttention,
-  isConnected,
   loadCount,
   now,
   queueCount,
@@ -2475,12 +2502,12 @@ function TechOverviewCard({
   technicianName,
   workingCount,
 }: {
+  connectionStatus: TechnicianConnectionStatus;
   currentIssue: {
     issue: IssueRecord;
     assignedAt: string | null;
   } | null;
   hasAttention: boolean;
-  isConnected: boolean;
   loadCount: number;
   now: number | null;
   queueCount: number;
@@ -2497,6 +2524,18 @@ function TechOverviewCard({
         : loadCount > 0
         ? "border-[#f59e0b]/45 bg-[#2a1c06]"
         : "border-[#22c55e]/40 bg-[#082515]";
+  const connectionLabel =
+    connectionStatus === "connected"
+      ? "Connected"
+      : connectionStatus === "stale"
+        ? "Weak / stale"
+        : "Not connected";
+  const connectionClassName =
+    connectionStatus === "connected"
+      ? "bg-[#22c55e] shadow-[0_0_8px_rgba(34,197,94,0.75)]"
+      : connectionStatus === "stale"
+        ? "bg-[#facc15] shadow-[0_0_8px_rgba(250,204,21,0.7)]"
+        : "bg-[#ef4444] shadow-[0_0_8px_rgba(239,68,68,0.7)]";
 
   return (
     <Link
@@ -2512,13 +2551,10 @@ function TechOverviewCard({
         />
       ) : null}
       <span
-        aria-label={isConnected ? "Connected" : "Disconnected"}
-        className={`absolute bottom-2 right-2 h-2.5 w-2.5 rounded-full ${
-          isConnected
-            ? "bg-[#22c55e] shadow-[0_0_8px_rgba(34,197,94,0.75)]"
-            : "bg-[#ef4444] shadow-[0_0_8px_rgba(239,68,68,0.7)]"
-        }`}
+        aria-label={connectionLabel}
+        className={`absolute bottom-2 right-2 h-2.5 w-2.5 rounded-full ${connectionClassName}`}
         role="status"
+        title={connectionLabel}
       />
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-white">
