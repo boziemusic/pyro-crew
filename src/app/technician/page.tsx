@@ -51,6 +51,7 @@ import {
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { TechnicianMapAssist } from "@/components/technician-map-assist";
 import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
+import { useIsMobileDevice } from "@/components/mobile-device";
 import {
   playSuccess,
   playTechAdditionalHelperAssigned,
@@ -584,6 +585,7 @@ export default function TechnicianConsolePage() {
   const activeShow = useActiveShow();
   const activeSession = useActiveContinuitySession();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
+  const isMobileDevice = useIsMobileDevice();
   const selectedTechnician = useSelectedTemporaryTechnician();
   const {
     error: noticesError,
@@ -2222,7 +2224,7 @@ export default function TechnicianConsolePage() {
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 pb-28 pt-0 md:gap-6 md:px-8 md:py-6 lg:py-8">
-      <header className="sticky top-0 z-40 -mx-3 flex min-h-16 items-center justify-between gap-3 border-b border-white/10 bg-[#070b18]/95 px-4 py-2 shadow-xl shadow-black/30 backdrop-blur md:hidden">
+      <header className={`${isMobileDevice ? "flex" : "hidden"} sticky top-0 z-40 -mx-3 min-h-16 items-center justify-between gap-3 border-b border-white/10 bg-[#070b18]/95 px-4 py-2 shadow-xl shadow-black/30 backdrop-blur`}>
         <div className="min-w-0">
           <p className="truncate text-sm font-bold text-white">
             {activeShow?.name ?? "No active show"}
@@ -2325,7 +2327,7 @@ export default function TechnicianConsolePage() {
           showId={activeShow.id}
         />
       ) : null}
-      <section className="hidden rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25 md:block">
+      <section className={`${isMobileDevice ? "hidden" : ""} rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25`}>
         <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#a78bfa]">
           Technician Console
         </p>
@@ -2472,7 +2474,7 @@ export default function TechnicianConsolePage() {
         </section>
       ) : null}
 
-      <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-3 shadow-xl shadow-black/20 md:hidden">
+      <section className={`${isMobileDevice ? "" : "hidden"} rounded-lg border border-white/10 bg-[#0b1020]/90 p-3 shadow-xl shadow-black/20`}>
         <div className="flex items-center justify-between gap-3 px-1 pb-3">
           <div>
             <h1 className="text-lg font-semibold text-white">
@@ -2568,7 +2570,7 @@ export default function TechnicianConsolePage() {
         </div>
       </section>
 
-      <section className="hidden rounded-lg border border-[#3b82f6]/25 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20 md:block">
+      <section className={`${isMobileDevice ? "hidden" : ""} rounded-lg border border-[#3b82f6]/25 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20`}>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-xl font-semibold text-white">
@@ -2639,7 +2641,7 @@ export default function TechnicianConsolePage() {
         </div>
       </section>
 
-      <section className="hidden rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20 md:block">
+      <section className={`${isMobileDevice ? "hidden" : ""} rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20`}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold text-white">
@@ -2675,7 +2677,7 @@ export default function TechnicianConsolePage() {
         </div>
       </section>
 
-      <section className="hidden rounded-lg border border-[#f59e0b]/25 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20 md:block">
+      <section className={`${isMobileDevice ? "hidden" : ""} rounded-lg border border-[#f59e0b]/25 bg-[#0b1020]/90 p-6 shadow-xl shadow-black/20`}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold text-white">
@@ -2707,7 +2709,7 @@ export default function TechnicianConsolePage() {
         </div>
       </section>
 
-      <section className="hidden rounded-lg border border-white/10 bg-[#0b1020]/90 p-5 shadow-xl shadow-black/20 md:block">
+      <section className={`${isMobileDevice ? "hidden" : ""} rounded-lg border border-white/10 bg-[#0b1020]/90 p-5 shadow-xl shadow-black/20`}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-white">
@@ -2740,7 +2742,7 @@ export default function TechnicianConsolePage() {
 
       <nav
         aria-label="Technician queue sections"
-        className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-white/10 bg-[#070b18]/98 px-1 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_30px_rgba(0,0,0,0.45)] backdrop-blur md:hidden"
+        className={`${isMobileDevice ? "grid" : "hidden"} fixed inset-x-0 bottom-0 z-50 grid-cols-4 border-t border-white/10 bg-[#070b18]/98 px-1 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_30px_rgba(0,0,0,0.45)] backdrop-blur`}
       >
         {(
           [
@@ -2853,7 +2855,7 @@ export default function TechnicianConsolePage() {
         <div
           aria-labelledby="technician-removed-title"
           aria-modal="true"
-          className="fixed inset-0 z-[76] flex items-center justify-center bg-black/85 p-5 backdrop-blur-sm md:hidden"
+          className={`${isMobileDevice ? "flex" : "hidden"} fixed inset-0 z-[76] items-center justify-center bg-black/85 p-5 backdrop-blur-sm`}
           role="dialog"
         >
           <section className="w-full max-w-md rounded-xl border border-[#ef4444]/45 bg-[#0b1020] p-6 shadow-2xl shadow-black/70">
@@ -2891,7 +2893,7 @@ export default function TechnicianConsolePage() {
         <div
           aria-labelledby="technician-director-return-title"
           aria-modal="true"
-          className="fixed inset-0 z-[72] flex items-center justify-center bg-black/82 p-5 backdrop-blur-sm md:hidden"
+          className={`${isMobileDevice ? "flex" : "hidden"} fixed inset-0 z-[72] items-center justify-center bg-black/82 p-5 backdrop-blur-sm`}
           role="dialog"
         >
           <section className="w-full max-w-md rounded-xl border border-[#f59e0b]/45 bg-[#0b1020] p-6 shadow-2xl shadow-black/60">
@@ -2971,7 +2973,7 @@ export default function TechnicianConsolePage() {
         <div
           aria-labelledby="technician-scoreboard-title"
           aria-modal="true"
-          className="fixed inset-0 z-[74] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm md:hidden"
+          className={`${isMobileDevice ? "flex" : "hidden"} fixed inset-0 z-[74] items-center justify-center bg-black/85 p-4 backdrop-blur-sm`}
           role="dialog"
         >
           <section className="flex max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-[#8b5cf6]/45 bg-[#0b1020] shadow-2xl shadow-black/70">

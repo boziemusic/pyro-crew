@@ -16,6 +16,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase";
 import { NativeDateInput } from "@/components/native-date-input";
+import { useIsMobileDevice } from "@/components/mobile-device";
 import {
   ActiveShow,
   getServerActiveShowSnapshot,
@@ -193,10 +194,12 @@ function formatSessionDate(timestamp: string | null | undefined) {
 }
 
 export function ShowsWorkspace() {
+  const isMobileDevice = useIsMobileDevice();
+
   if (!isSupabaseConfigured) {
     return (
       <>
-        <div className="md:hidden">
+        {isMobileDevice ? (
           <MobileTechnicianEntry
             isEntering={false}
             message={null}
@@ -205,12 +208,13 @@ export function ShowsWorkspace() {
             selectedTechnician="tech_1"
             supabaseConfigured={false}
           />
-        </div>
-        <div className="hidden px-8 py-10 md:block">
-          <p className="rounded-lg border border-[#ef4444]/40 bg-[#2a0b13] p-5 font-semibold text-[#fecaca]">
-            Supabase is not configured on this device/session.
-          </p>
-        </div>
+        ) : (
+          <div className="px-8 py-10">
+            <p className="rounded-lg border border-[#ef4444]/40 bg-[#2a0b13] p-5 font-semibold text-[#fecaca]">
+              Supabase is not configured on this device/session.
+            </p>
+          </div>
+        )}
       </>
     );
   }
@@ -221,6 +225,7 @@ export function ShowsWorkspace() {
 function ConfiguredShowsWorkspace() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const router = useRouter();
+  const isMobileDevice = useIsMobileDevice();
   const [shows, setShows] = useState<ShowRecord[]>([]);
   const activeShow = useSyncExternalStore(
     subscribeToActiveShowStore,
@@ -1081,9 +1086,8 @@ function ConfiguredShowsWorkspace() {
     }
   };
 
-  return (
-    <>
-      <div className="md:hidden">
+  if (isMobileDevice) {
+    return (
       <MobileTechnicianEntry
         isEntering={isEnteringTechnicianConsole}
         message={mobileEntryMessage}
@@ -1097,8 +1101,10 @@ function ConfiguredShowsWorkspace() {
         selectedTechnician={selectedTechnician}
         supabaseConfigured={isSupabaseConfigured}
       />
-      </div>
-      <div className="hidden md:block">
+    );
+  }
+
+  return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-5 py-6 sm:px-8 lg:py-8">
       {showsView !== "landing" ? (
         <section className="rounded-lg border border-white/10 bg-[#0b1020]/90 p-6 shadow-2xl shadow-black/25">
@@ -1781,8 +1787,6 @@ function ConfiguredShowsWorkspace() {
         </div>
       ) : null}
     </div>
-      </div>
-    </>
   );
 }
 
@@ -1972,19 +1976,42 @@ function QrScannerModal({
   const streamRef = useRef<MediaStream | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [status, setStatus] = useState("Starting camera...");
+  const [cameraStatus, setCameraStatus] = useState("Requesting camera...");
+  const [lastDecodeAttempt, setLastDecodeAttempt] =
+    useState("Waiting for video...");
+  const [needsManualStart, setNeedsManualStart] = useState(false);
+
+  const playVideo = useCallback(async () => {
+    const video = videoRef.current;
+
+    if (!video) {
+      return;
+    }
+
+    try {
+      await video.play();
+      setNeedsManualStart(false);
+      setCameraStatus("Camera active");
+    } catch {
+      setNeedsManualStart(true);
+      setCameraStatus("Tap to start camera.");
+    }
+  }, []);
 
   useEffect(() => {
     let isCancelled = false;
-    let intervalId: number | null = null;
+    let animationFrameId: number | null = null;
+    let isDetecting = false;
+    let attemptCount = 0;
     const canvas = document.createElement("canvas");
     const canvasContext = canvas.getContext("2d", {
       willReadFrequently: true,
     });
 
     const stopCamera = () => {
-      if (intervalId) {
-        window.clearInterval(intervalId);
-        intervalId = null;
+      if (animationFrameId) {
+        window.cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
       }
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -1997,7 +2024,59 @@ function QrScannerModal({
       }
 
       setLocalError(message);
+      setStatus("Scanner stopped.");
       onScanError(message);
+    };
+
+    const waitForMetadata = (video: HTMLVideoElement) =>
+      new Promise<void>((resolve, reject) => {
+        if (video.videoWidth && video.videoHeight) {
+          resolve();
+          return;
+        }
+
+        const timeoutId = window.setTimeout(() => {
+          video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+          reject(new Error("Video metadata did not load."));
+        }, 5000);
+
+        function handleLoadedMetadata() {
+          window.clearTimeout(timeoutId);
+          resolve();
+        }
+
+        video.addEventListener("loadedmetadata", handleLoadedMetadata, {
+          once: true,
+        });
+      });
+
+    const decodeWithJsQr = (
+      video: HTMLVideoElement,
+      inversionAttempts: "dontInvert" | "attemptBoth",
+    ) => {
+      if (!canvasContext || !video.videoWidth || !video.videoHeight) {
+        return null;
+      }
+
+      if (
+        canvas.width !== video.videoWidth ||
+        canvas.height !== video.videoHeight
+      ) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+
+      canvasContext.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = canvasContext.getImageData(
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+      );
+
+      return jsQR(imageData.data, canvas.width, canvas.height, {
+        inversionAttempts,
+      });
     };
 
     const startScanning = async () => {
@@ -2031,16 +2110,33 @@ function QrScannerModal({
           videoRef.current.srcObject = stream;
           videoRef.current.muted = true;
           videoRef.current.playsInline = true;
-          await videoRef.current.play();
+          setCameraStatus("Camera active");
+          void waitForMetadata(videoRef.current)
+            .then(() => {
+              if (!isCancelled) {
+                setLastDecodeAttempt("Video metadata loaded.");
+              }
+            })
+            .catch(() => {
+              if (!isCancelled) {
+                setLastDecodeAttempt("Waiting for video metadata...");
+              }
+            });
+          await playVideo();
         }
 
         const detector = BarcodeDetector
           ? new BarcodeDetector({ formats: ["qr_code"] })
           : null;
-        setStatus("Point camera at the Director QR code.");
+        setStatus("Scanning...");
+        setLastDecodeAttempt("Waiting for QR code...");
 
-        intervalId = window.setInterval(async () => {
+        const scanFrame = async () => {
           const video = videoRef.current;
+
+          if (isCancelled) {
+            return;
+          }
 
           if (
             !video ||
@@ -2048,9 +2144,21 @@ function QrScannerModal({
             !video.videoWidth ||
             !video.videoHeight
           ) {
+            setLastDecodeAttempt("Waiting for video frame...");
+            animationFrameId = window.requestAnimationFrame(() => {
+              void scanFrame();
+            });
             return;
           }
 
+          if (isDetecting) {
+            animationFrameId = window.requestAnimationFrame(() => {
+              void scanFrame();
+            });
+            return;
+          }
+
+          isDetecting = true;
           try {
             let rawValue: string | undefined;
 
@@ -2058,18 +2166,10 @@ function QrScannerModal({
               const detectedCodes = await detector.detect(video);
               rawValue = detectedCodes[0]?.rawValue;
             } else if (canvasContext) {
-              canvas.width = video.videoWidth;
-              canvas.height = video.videoHeight;
-              canvasContext.drawImage(video, 0, 0, canvas.width, canvas.height);
-              const imageData = canvasContext.getImageData(
-                0,
-                0,
-                canvas.width,
-                canvas.height,
-              );
               rawValue =
-                jsQR(imageData.data, imageData.width, imageData.height)
-                  ?.data ?? undefined;
+                decodeWithJsQr(video, "dontInvert")?.data ??
+                decodeWithJsQr(video, "attemptBoth")?.data ??
+                undefined;
             } else {
               failScanning(
                 "Camera scanning unavailable. Enter the code manually.",
@@ -2077,19 +2177,32 @@ function QrScannerModal({
               return;
             }
 
+            attemptCount += 1;
+            setLastDecodeAttempt(
+              rawValue
+                ? "QR found. Validating..."
+                : `Scanning... attempt ${attemptCount}`,
+            );
+
             if (!rawValue) {
+              isDetecting = false;
+              animationFrameId = window.requestAnimationFrame(() => {
+                void scanFrame();
+              });
               return;
             }
 
             const code = extractJoinCodeFromQr(rawValue);
 
             if (!code) {
+              setLastDecodeAttempt("QR found / invalid code");
               failScanning(
                 "Invalid QR code. Scan the Director join code or enter it manually.",
               );
               return;
             }
 
+            setLastDecodeAttempt(`QR found: ${code}`);
             stopCamera();
             onScan(code);
           } catch (scanError) {
@@ -2097,8 +2210,14 @@ function QrScannerModal({
             failScanning(
               "Camera scanning unavailable. Enter the code manually.",
             );
+          } finally {
+            isDetecting = false;
           }
-        }, 350);
+        };
+
+        animationFrameId = window.requestAnimationFrame(() => {
+          void scanFrame();
+        });
       } catch {
         failScanning(
           "Camera scanning unavailable. Enter the code manually.",
@@ -2112,13 +2231,13 @@ function QrScannerModal({
       isCancelled = true;
       stopCamera();
     };
-  }, [onScan, onScanError]);
+  }, [onScan, onScanError, playVideo]);
 
   return (
     <div
       aria-labelledby="qr-scanner-title"
       aria-modal="true"
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm md:hidden"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
       role="dialog"
     >
       <section className="w-full max-w-md rounded-xl border border-[#8b5cf6]/45 bg-[#0b1020] p-4 shadow-2xl shadow-black/70">
@@ -2157,6 +2276,20 @@ function QrScannerModal({
         <p className="mt-3 text-sm font-semibold text-[#cbd5e1]">
           {localError ?? status}
         </p>
+        <div className="mt-3 grid gap-1 rounded-lg border border-white/10 bg-[#070b18] p-3 text-xs font-semibold text-[#94a3b8]">
+          <p>Camera: {cameraStatus}</p>
+          <p>Status: {status}</p>
+          <p>Last decode attempt: {lastDecodeAttempt}</p>
+        </div>
+        {needsManualStart ? (
+          <button
+            className="mt-3 min-h-11 w-full touch-manipulation rounded-lg border border-[#8b5cf6]/45 bg-[#17102c] px-4 py-3 text-sm font-bold text-white active:bg-[#251447]"
+            onClick={() => void playVideo()}
+            type="button"
+          >
+            Tap to Start Camera
+          </button>
+        ) : null}
         {localError ? (
           <p className="mt-2 rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-xs font-semibold leading-5 text-[#fde68a]">
             Camera scanning unavailable. Enter the code manually.
