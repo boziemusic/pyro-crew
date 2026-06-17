@@ -39,7 +39,6 @@ import {
   acknowledgeTechnicianNotice,
   fetchActiveAdditionalTechnicianAssignments,
   parseHandoffNoticePayload,
-  recordTechnicianHeartbeat,
   type TechnicianNotice,
   type HandoffNoticePayload,
   updateIncomingHandoffNotice,
@@ -601,9 +600,6 @@ export default function TechnicianConsolePage() {
     sessionId: string;
   } | null>(null);
   const [isManuallyRefreshing, setIsManuallyRefreshing] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<
-    "connected" | "disconnected"
-  >("connected");
   const [handoffNotes, setHandoffNotes] = useState<Record<string, string>>(
     {},
   );
@@ -622,7 +618,6 @@ export default function TechnicianConsolePage() {
   const handledDirectorReturnNoticeIds = useRef<Set<string>>(new Set());
   const sessionStatusSnapshot = useRef<string | null>(null);
   const shownEndedSessionIds = useRef<Set<string>>(new Set());
-  const lastSuccessfulConnectionAt = useRef(0);
 
   useEffect(() => {
     issueAlertSnapshot.current = null;
@@ -660,11 +655,6 @@ export default function TechnicianConsolePage() {
     },
     [updateQueryDiagnostic],
   );
-
-  const markConnected = useCallback(() => {
-    lastSuccessfulConnectionAt.current = Date.now();
-    setConnectionStatus("connected");
-  }, []);
 
   const loadSessionScoreboard = useCallback(
     async (sessionId: string) => {
@@ -970,7 +960,6 @@ export default function TechnicianConsolePage() {
       }
 
       const sessionRecord = data as SessionStatusRecord;
-      markConnected();
       const previousStatus = sessionStatusSnapshot.current;
       sessionStatusSnapshot.current = sessionRecord.status;
 
@@ -1014,7 +1003,7 @@ export default function TechnicianConsolePage() {
       isCancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeSession, activeShow, loadSessionScoreboard, markConnected, supabase]);
+  }, [activeSession, activeShow, loadSessionScoreboard, supabase]);
 
   const refreshLatestNotes = useCallback(
     async (issueRecords: TechnicianIssue[]) => {
@@ -1160,7 +1149,6 @@ export default function TechnicianConsolePage() {
 
       setActiveAssignments(assignments);
       setActiveQueueIssueIds(new Set(queueIssueIds));
-      markConnected();
       updateQueryDiagnostic("assignments", {
         status: "loaded",
         error: null,
@@ -1228,9 +1216,8 @@ export default function TechnicianConsolePage() {
         status: "error",
         error: errorMessage,
       });
-      setConnectionStatus("disconnected");
     }
-  }, [fetchIssues, markConnected, refreshLatestNotes, updateQueryDiagnostic]);
+  }, [fetchIssues, refreshLatestNotes, updateQueryDiagnostic]);
 
   useEffect(() => {
     const loadIssues = async () => {
@@ -1558,70 +1545,15 @@ export default function TechnicianConsolePage() {
         error: noticesError,
       });
       if (noticesError) {
-        setConnectionStatus("disconnected");
         setFeedback({
           type: "error",
           message: `Could not load technician notices: ${noticesError}`,
         });
-      } else if (!noticesLoading) {
-        markConnected();
       }
     }, 0);
 
     return () => window.clearTimeout(updateId);
-  }, [markConnected, noticesError, noticesLoading, updateQueryDiagnostic]);
-
-  const sendHeartbeat = useCallback(async () => {
-    if (!activeShow || !activeSession) {
-      setConnectionStatus("disconnected");
-      return;
-    }
-
-    if (activeSession.show_id !== activeShow.id) {
-      setConnectionStatus("disconnected");
-      return;
-    }
-
-    const { error } = await recordTechnicianHeartbeat({
-      sessionId: activeSession.id,
-      showId: activeShow.id,
-      technicianId: selectedTechnician,
-    });
-
-    if (error) {
-      setConnectionStatus("disconnected");
-    } else {
-      markConnected();
-    }
-  }, [activeSession, activeShow, markConnected, selectedTechnician]);
-
-  useEffect(() => {
-    if (!activeShow || !activeSession) {
-      return;
-    }
-
-    const initialHeartbeatId = window.setTimeout(() => {
-      void sendHeartbeat();
-    }, 0);
-    const intervalId = window.setInterval(() => {
-      void sendHeartbeat();
-    }, 15000);
-
-    return () => {
-      window.clearTimeout(initialHeartbeatId);
-      window.clearInterval(intervalId);
-    };
-  }, [activeSession, activeShow, sendHeartbeat]);
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      if (Date.now() - lastSuccessfulConnectionAt.current > 30000) {
-        setConnectionStatus("disconnected");
-      }
-    }, 5000);
-
-    return () => window.clearInterval(intervalId);
-  }, []);
+  }, [noticesError, noticesLoading, updateQueryDiagnostic]);
 
   const acknowledgeActiveWork = async (issueId: string) => {
     const acknowledgedAt = new Date().toISOString();
@@ -2202,7 +2134,7 @@ export default function TechnicianConsolePage() {
   const refreshTechnicianConsole = async () => {
     setIsManuallyRefreshing(true);
     try {
-      await Promise.all([refreshIssues(), refreshNotices(), sendHeartbeat()]);
+      await Promise.all([refreshIssues(), refreshNotices()]);
     } finally {
       setIsManuallyRefreshing(false);
     }
@@ -2225,19 +2157,6 @@ export default function TechnicianConsolePage() {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span
-            aria-label={
-              connectionStatus === "connected"
-                ? "Connected"
-                : "Not connected"
-            }
-            className={`h-2.5 w-2.5 rounded-full ${
-              connectionStatus === "connected"
-                ? "bg-[#22c55e] shadow-[0_0_8px_rgba(34,197,94,0.8)]"
-                : "bg-[#ef4444] shadow-[0_0_8px_rgba(239,68,68,0.75)]"
-            }`}
-            role="status"
-          />
           <button
             aria-label="Refresh technician console"
             className="flex h-11 w-11 touch-manipulation items-center justify-center rounded-lg border border-white/15 bg-[#0d1324] text-white active:bg-[#17102c] disabled:opacity-50"

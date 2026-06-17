@@ -46,6 +46,7 @@ export type HandoffNoticePayload = {
 };
 
 const COLLABORATION_EVENT = "pyro-crew-collaboration-change";
+export const HEARTBEAT_ENABLED = false;
 const TECHNICIAN_HEARTBEAT_DEVICE_STORAGE_KEY =
   "pyro-crew-technician-heartbeat-device-id";
 
@@ -441,6 +442,10 @@ export async function recordTechnicianHeartbeat({
   showId: string;
   technicianId: TemporaryTechnicianId;
 }) {
+  if (!HEARTBEAT_ENABLED) {
+    return { error: null };
+  }
+
   const supabase = createSupabaseBrowserClient();
   const now = new Date().toISOString();
   const deviceId = getTechnicianHeartbeatDeviceId();
@@ -592,6 +597,12 @@ export function useShowTechnicianPresence(
     }
 
     const supabase = createSupabaseBrowserClient();
+    if (!HEARTBEAT_ENABLED) {
+      setPresenceByTechnician({});
+      setError(null);
+      return;
+    }
+
     let query = supabase
       .from("technician_heartbeats")
       .select("technician_name, last_seen_at")
