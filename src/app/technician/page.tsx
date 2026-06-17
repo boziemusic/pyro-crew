@@ -50,7 +50,10 @@ import {
 } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { TechnicianMapAssist } from "@/components/technician-map-assist";
-import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
+import {
+  MobileTechnicianAlertToggle,
+  MobileTechnicianSoundDiagnostics,
+} from "@/components/app-feedback-controls";
 import {
   playSuccess,
   playUiClick,
@@ -2225,6 +2228,7 @@ export default function TechnicianConsolePage() {
               >
                 Clear Active Show
               </button>
+              <MobileTechnicianSoundDiagnostics />
             </div>
           ) : null}
           </div>

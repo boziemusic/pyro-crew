@@ -28,6 +28,7 @@ const DEFAULT_DIAGNOSTICS: AppFeedbackDiagnostics = {
 
 const soundPaths = {
   directorAssistanceNeeded: "/sounds/director-assistance-needed.mp3",
+  verificationRequestedPrimary: "/sounds/verification-requested-1.mp3",
   success: "/sounds/success.mp3",
   uiClick: "/sounds/ui-click.mp3",
   warning: "/sounds/warning.mp3",
@@ -156,7 +157,20 @@ function getAudioContext() {
     return null;
   }
 
-  audioContext ??= new AudioContext();
+  const AudioContextConstructor =
+    window.AudioContext ??
+    (
+      window as Window &
+        typeof globalThis & {
+          webkitAudioContext?: typeof AudioContext;
+        }
+    ).webkitAudioContext;
+
+  if (!AudioContextConstructor) {
+    return null;
+  }
+
+  audioContext ??= new AudioContextConstructor();
   return audioContext;
 }
 
@@ -250,6 +264,7 @@ async function playSound(
   path: string,
   fallbackFrequency: number,
   fallbackDurationMs: number,
+  options: { ignoreSettings?: boolean } = {},
 ) {
   updateDiagnostics({
     lastSoundRequested: `${label} (${path})`,
@@ -257,7 +272,10 @@ async function playSound(
     lastSoundDetail: "Playback requested.",
   });
 
-  if (!getAppFeedbackSettings().soundsEnabled) {
+  if (
+    !options.ignoreSettings &&
+    !getAppFeedbackSettings().soundsEnabled
+  ) {
     updateDiagnostics({
       lastSoundResult: "blocked",
       lastSoundDetail: "Sounds are disabled.",
@@ -360,11 +378,24 @@ export async function testAppFeedbackSound() {
   const played = await playGeneratedTone(640, 160, 0.06);
   updateDiagnostics({
     audioUnlocked: played,
-    lastSoundResult: played ? "played" : "error",
+    lastSoundResult: played ? "played" : "blocked",
     lastSoundDetail: played
       ? "WebAudio test tone played."
-      : "WebAudio test tone failed.",
+      : "WebAudio test tone was blocked.",
   });
+
+  if (!played) {
+    return false;
+  }
+
+  await playSound(
+    "Test Sound MP3",
+    soundPaths.verificationRequestedPrimary,
+    640,
+    160,
+    { ignoreSettings: true },
+  );
+
   return played;
 }
 
