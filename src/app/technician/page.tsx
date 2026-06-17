@@ -279,6 +279,20 @@ const resolutionNoticeTypes = new Set([
   "unfixable",
 ]);
 
+const technicianNoticeSoundTypes = new Set([
+  "additional_help_assigned",
+  "additional_tech_approved",
+  "additional_tech_declined",
+  "verification_passed",
+  "verification_failed",
+  "retrieving_parts",
+  "unfixable",
+  "reassigned",
+  "handoff",
+  "handoff_incoming",
+  "reassignment",
+]);
+
 function getTimestampValue(value: string | null | undefined) {
   const timestamp = value ? Date.parse(value) : Number.NaN;
   return Number.isNaN(timestamp) ? 0 : timestamp;
@@ -450,6 +464,17 @@ function playTechnicianNoticeSound(notice: TechnicianNotice) {
   }
 
   return false;
+}
+
+function hasSpecificTechnicianNoticeForIssue(
+  issueId: string,
+  notices: TechnicianNotice[],
+) {
+  return notices.some(
+    (notice) =>
+      notice.issue_id === issueId &&
+      technicianNoticeSoundTypes.has(notice.notice_type),
+  );
 }
 
 function getAdditionalHelperName(message: string | null) {
@@ -861,6 +886,7 @@ export default function TechnicianConsolePage() {
         data: [],
         error: null,
         failedQuery: null,
+        primaryIssueIds: [],
         queueIssueIds: [],
       };
     }
@@ -887,6 +913,7 @@ export default function TechnicianConsolePage() {
         data: [],
         error: assignmentError ?? additionalAssignmentError,
         failedQuery: "assignments" as const,
+        primaryIssueIds: [],
         queueIssueIds: [],
       };
     }
@@ -911,6 +938,7 @@ export default function TechnicianConsolePage() {
           data: [],
           error: allAssignmentError,
           failedQuery: "assignments" as const,
+          primaryIssueIds: [],
           queueIssueIds: [],
         };
       }
@@ -951,6 +979,11 @@ export default function TechnicianConsolePage() {
         ...helperIssueIds,
       ]),
     ];
+    const primaryIssueIds = [
+      ...new Set(
+        selectedAssignments.map((assignment) => assignment.issue_id),
+      ),
+    ];
 
     if (issueIds.length === 0) {
       return {
@@ -958,6 +991,7 @@ export default function TechnicianConsolePage() {
         data: [],
         error: null,
         failedQuery: null,
+        primaryIssueIds,
         queueIssueIds,
       };
     }
@@ -977,6 +1011,7 @@ export default function TechnicianConsolePage() {
       data,
       error,
       failedQuery: error ? ("issues" as const) : null,
+      primaryIssueIds,
       queueIssueIds,
     };
   }, [
@@ -1183,6 +1218,7 @@ export default function TechnicianConsolePage() {
         data,
         error,
         failedQuery,
+        primaryIssueIds,
         queueIssueIds,
       } = await fetchIssues();
 
@@ -1210,6 +1246,7 @@ export default function TechnicianConsolePage() {
         nextIssues.map((issue) => [issue.id, issue.status]),
       );
       const previousAlertSnapshot = issueAlertSnapshot.current;
+      const primaryIssueIdSet = new Set(primaryIssueIds);
 
       if (previousAlertSnapshot) {
         let hasNormalAlert = false;
@@ -1219,7 +1256,12 @@ export default function TechnicianConsolePage() {
           const previousStatus = previousAlertSnapshot.get(issue.id);
 
           if (!previousStatus) {
-            hasNormalAlert = true;
+            if (
+              primaryIssueIdSet.has(issue.id) &&
+              !hasSpecificTechnicianNoticeForIssue(issue.id, notices)
+            ) {
+              hasNormalAlert = true;
+            }
             return;
           }
 
@@ -1269,7 +1311,7 @@ export default function TechnicianConsolePage() {
         error: errorMessage,
       });
     }
-  }, [fetchIssues, refreshLatestNotes, updateQueryDiagnostic]);
+  }, [fetchIssues, notices, refreshLatestNotes, updateQueryDiagnostic]);
 
   useEffect(() => {
     const loadIssues = async () => {
