@@ -491,6 +491,41 @@ function humanizeNoticeType(value: string) {
     .join(" ");
 }
 
+function extractHumanReadableNoticeMessage(message: string | null) {
+  const trimmedMessage = message?.trim();
+
+  if (!trimmedMessage) {
+    return null;
+  }
+
+  if (!trimmedMessage.startsWith("{") && !trimmedMessage.startsWith("[")) {
+    return trimmedMessage;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmedMessage) as unknown;
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+
+    const payload = parsed as Record<string, unknown>;
+    const noteFields = ["note", "director_note", "directorNote", "message", "reason"];
+
+    for (const field of noteFields) {
+      const value = payload[field];
+
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 function getDirectorReturnPopupContent(
   popup: DirectorReturnPopup,
 ): DirectorReturnPopupContent {
@@ -579,8 +614,8 @@ function getDirectorReturnPopupContent(
   ) {
     return {
       headline: "This issue has been reassigned.",
-      note,
-      subtext: null,
+      note: null,
+      subtext: note,
     };
   }
 
@@ -588,10 +623,15 @@ function getDirectorReturnPopupContent(
     popup.noticeType === "handoff" ||
     popup.noticeType === "handoff_incoming"
   ) {
+    const wasPromotedToPrimary =
+      note === "You are now the primary technician for this issue.";
+
     return {
-      headline: "You have a handoff update.",
-      note,
-      subtext: null,
+      headline: wasPromotedToPrimary
+        ? "You are now the primary technician for this issue."
+        : "You have been assigned this issue.",
+      note: null,
+      subtext: wasPromotedToPrimary ? null : note,
     };
   }
 
@@ -690,6 +730,7 @@ export default function TechnicianConsolePage() {
   const hasSelectedMobileSection = useRef(false);
   const issueAlertSnapshot = useRef<Map<string, string> | null>(null);
   const noticeAlertSnapshot = useRef<Set<string> | null>(null);
+  const playedTechnicianNoticeSoundIds = useRef<Set<string>>(new Set());
   const pendingDirectorReturnNoticeIds = useRef<Set<string>>(new Set());
   const handledDirectorReturnNoticeIds = useRef<Set<string>>(new Set());
   const sessionStatusSnapshot = useRef<string | null>(null);
@@ -698,6 +739,7 @@ export default function TechnicianConsolePage() {
   useEffect(() => {
     issueAlertSnapshot.current = null;
     noticeAlertSnapshot.current = null;
+    playedTechnicianNoticeSoundIds.current = new Set();
     pendingDirectorReturnNoticeIds.current = new Set();
     handledDirectorReturnNoticeIds.current = new Set();
     sessionStatusSnapshot.current = null;
@@ -1574,10 +1616,22 @@ export default function TechnicianConsolePage() {
 
     if (newNotices.length > 0) {
       const soundNotice =
-        newNotices.find(isDirectorReturnNotice) ?? newNotices[0];
+        newNotices.find(
+          (notice) =>
+            isDirectorReturnNotice(notice) &&
+            !playedTechnicianNoticeSoundIds.current.has(notice.id),
+        ) ??
+        newNotices.find(
+          (notice) =>
+            !playedTechnicianNoticeSoundIds.current.has(notice.id),
+        );
 
-      if (!soundNotice || !playTechnicianNoticeSound(soundNotice)) {
-        playWarning();
+      if (soundNotice) {
+        playedTechnicianNoticeSoundIds.current.add(soundNotice.id);
+
+        if (!playTechnicianNoticeSound(soundNotice)) {
+          playWarning();
+        }
       }
       vibrate([120, 60, 120]);
       void refreshIssues();
@@ -1649,7 +1703,7 @@ export default function TechnicianConsolePage() {
     handledDirectorReturnNoticeIds.current.add(pendingNotice.id);
     setDirectorReturnPopup({
       issue: matchingIssue,
-      note: pendingNotice.message?.trim() || null,
+      note: extractHumanReadableNoticeMessage(pendingNotice.message),
       noticeId: pendingNotice.id,
       noticeType: pendingNotice.notice_type,
       previousStatus: latestPreviousStatuses[matchingIssue.id] ?? null,

@@ -26,7 +26,6 @@ import { useFieldMap } from "@/components/field-map-store";
 import { useShowPositions } from "@/components/position-store";
 import {
   completeAdditionalTechnicianAssignments,
-  createHandoffNotices,
   createTechnicianNotice,
   removeTechnicianFromSession,
   useActiveAdditionalTechnicianAssignments,
@@ -1229,6 +1228,10 @@ export default function DirectorConsolePage() {
     if (!originalTechnician || originalTechnician === technicianId) {
       return;
     }
+    const sessionId = issue.session_id ?? sessionForActiveShow?.id ?? null;
+    const originalLabel =
+      getTemporaryTechnicianLabel(originalTechnician);
+    const newLabel = getTemporaryTechnicianLabel(technicianId);
 
     playUiClick();
     setReassigningIssueId(issue.id);
@@ -1268,38 +1271,33 @@ export default function DirectorConsolePage() {
 
     await completeAdditionalTechnicianAssignments(issue.id);
 
-    const { error: handoffError } =
-      issue.status !== "assigned"
-        ? await createHandoffNotices({
-            payload: {
-              channelNumber: issue.channel_number,
-              cueValue: issue.cue_value,
-              effectName: issue.effect_name,
-              fromTechnician: originalTechnician,
-              issueId: issue.id,
-              issueType: issue.issue_type,
-              positionName: issue.position_name,
-              previousStatus: issue.status,
-              toTechnician: technicianId,
-            },
-            sessionId:
-              issue.session_id ?? sessionForActiveShow?.id ?? null,
-            showId: activeShow.id,
-          })
-        : await createTechnicianNotice({
-            issueId: issue.id,
-            message: `Issue reassigned from ${getTemporaryTechnicianLabel(originalTechnician)}.`,
-            noticeType: "reassigned",
-            sessionId:
-              issue.session_id ?? sessionForActiveShow?.id ?? null,
-            showId: activeShow.id,
-            technicianId,
-            title: "Issue Reassigned",
-          });
-
-    const originalLabel =
-      getTemporaryTechnicianLabel(originalTechnician);
-    const newLabel = getTemporaryTechnicianLabel(technicianId);
+    const wasNewTechnicianAlreadyHelper =
+      additionalAssignments[issue.id] === technicianId;
+    const noticeResults = await Promise.all([
+      createTechnicianNotice({
+        issueId: issue.id,
+        message: `The Director moved this issue to ${newLabel}.`,
+        noticeType: "reassigned",
+        sessionId,
+        showId: activeShow.id,
+        technicianId: originalTechnician,
+        title: "Issue Reassigned",
+      }),
+      createTechnicianNotice({
+        issueId: issue.id,
+        message: wasNewTechnicianAlreadyHelper
+          ? "You are now the primary technician for this issue."
+          : `This issue was handed off from ${originalLabel}.`,
+        noticeType: "handoff",
+        sessionId,
+        showId: activeShow.id,
+        technicianId,
+        title: wasNewTechnicianAlreadyHelper
+          ? "Primary Technician Assignment"
+          : "Issue Handoff",
+      }),
+    ]);
+    const handoffError = noticeResults.find((result) => result.error)?.error;
     const { error: historyError } = await supabase
       .from("issue_status_history")
       .insert({

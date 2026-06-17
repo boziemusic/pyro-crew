@@ -290,11 +290,10 @@ export async function createHandoffNotices({
   showId: string;
 }) {
   const supabase = createSupabaseBrowserClient();
-  const message = JSON.stringify(payload);
   const { error } = await supabase.from("technician_notices").insert([
     {
       issue_id: payload.issueId,
-      message,
+      message: `The Director moved this issue to ${payload.toTechnician}.`,
       notice_type: "reassigned",
       session_id: sessionId,
       show_id: showId,
@@ -304,7 +303,7 @@ export async function createHandoffNotices({
     },
     {
       issue_id: payload.issueId,
-      message,
+      message: `This issue was handed off from ${payload.fromTechnician}.`,
       notice_type: "handoff",
       session_id: sessionId,
       show_id: showId,
