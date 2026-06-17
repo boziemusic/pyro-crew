@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -105,6 +106,54 @@ function normalizeJoinCode(value: string) {
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
     .slice(0, 4);
+}
+
+type DetectedBarcode = {
+  rawValue?: string;
+};
+
+type BarcodeDetectorInstance = {
+  detect: (source: HTMLVideoElement) => Promise<DetectedBarcode[]>;
+};
+
+type BarcodeDetectorConstructor = new (options?: {
+  formats?: string[];
+}) => BarcodeDetectorInstance;
+
+function getBarcodeDetectorConstructor() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return (
+    (window as Window & {
+      BarcodeDetector?: BarcodeDetectorConstructor;
+    }).BarcodeDetector ?? null
+  );
+}
+
+function extractJoinCodeFromQr(value: string) {
+  const trimmed = value.trim();
+
+  try {
+    const parsedUrl = new URL(trimmed);
+    const codeFromUrl = parsedUrl.searchParams.get("code");
+
+    if (codeFromUrl) {
+      const normalizedCode = normalizeJoinCode(codeFromUrl);
+      return normalizedCode.length === 4 ? normalizedCode : null;
+    }
+  } catch {
+    // Raw codes are expected too.
+  }
+
+  const normalizedRawCode = normalizeJoinCode(trimmed);
+  if (normalizedRawCode.length === 4) {
+    return normalizedRawCode;
+  }
+
+  const match = trimmed.toUpperCase().match(/\b[A-Z0-9]{4}\b/);
+  return match ? normalizeJoinCode(match[0]) : null;
 }
 
 function formatShowDate(showDate: string | null) {
@@ -1753,6 +1802,8 @@ function MobileTechnicianEntry({
   const [technicianName, setTechnicianName] = useState(
     selectedTechnician.startsWith("tech_") ? "" : selectedTechnician,
   );
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [scannerError, setScannerError] = useState<string | null>(null);
   const normalizedJoinCode = normalizeJoinCode(joinCode);
   const normalizedTechnicianName =
     normalizeTechnicianDisplayName(technicianName);
@@ -1787,6 +1838,30 @@ function MobileTechnicianEntry({
               Enter Show Code
             </h2>
           </div>
+          <button
+            aria-label="Scan show code QR"
+            className="flex h-11 w-11 touch-manipulation items-center justify-center rounded-lg border border-[#8b5cf6]/35 bg-[#17102c] text-[#d8c8ff] active:bg-[#251447]"
+            onClick={() => {
+              setScannerError(null);
+              setIsScannerOpen(true);
+            }}
+            type="button"
+          >
+            <svg
+              aria-hidden="true"
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <path
+                d="M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3M8 8h3v3H8V8Zm5 0h3v3h-3V8Zm-5 5h3v3H8v-3Zm5 0h1.5M16 13v3M13 16h3"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.8"
+              />
+            </svg>
+          </button>
         </div>
 
         <input
@@ -1808,6 +1883,11 @@ function MobileTechnicianEntry({
         <p className="mt-2 text-xs leading-5 text-[#94a3b8]">
           Ask the Director for the four-character Technician Join Code.
         </p>
+        {scannerError ? (
+          <p className="mt-3 rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-xs font-semibold leading-5 text-[#fde68a]">
+            {scannerError}
+          </p>
+        ) : null}
       </section>
 
       <section className="rounded-xl border border-white/10 bg-[#0b1020]/95 p-4 shadow-xl shadow-black/20">
@@ -1860,6 +1940,186 @@ function MobileTechnicianEntry({
           Supabase is not configured on this device/session.
         </p>
       ) : null}
+
+      {isScannerOpen ? (
+        <QrScannerModal
+          onClose={() => setIsScannerOpen(false)}
+          onScan={(code) => {
+            setJoinCode(code);
+            setScannerError(null);
+            setIsScannerOpen(false);
+          }}
+          onScanError={setScannerError}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function QrScannerModal({
+  onClose,
+  onScan,
+  onScanError,
+}: {
+  onClose: () => void;
+  onScan: (code: string) => void;
+  onScanError: (message: string) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [status, setStatus] = useState("Starting camera...");
+
+  useEffect(() => {
+    let isCancelled = false;
+    let intervalId: number | null = null;
+
+    const stopCamera = () => {
+      if (intervalId) {
+        window.clearInterval(intervalId);
+      }
+
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    };
+
+    const failScanning = (message: string) => {
+      if (isCancelled) {
+        return;
+      }
+
+      setLocalError(message);
+      onScanError(message);
+    };
+
+    const startScanning = async () => {
+      const BarcodeDetector = getBarcodeDetectorConstructor();
+
+      if (!BarcodeDetector || !navigator.mediaDevices?.getUserMedia) {
+        failScanning(
+          "Camera scanning unavailable. Enter the code manually.",
+        );
+        return;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: "environment" },
+          },
+        });
+
+        if (isCancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        streamRef.current = stream;
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+
+        const detector = new BarcodeDetector({ formats: ["qr_code"] });
+        setStatus("Point camera at the Director QR code.");
+
+        intervalId = window.setInterval(async () => {
+          const video = videoRef.current;
+
+          if (!video || video.readyState < 2) {
+            return;
+          }
+
+          try {
+            const detectedCodes = await detector.detect(video);
+            const rawValue = detectedCodes[0]?.rawValue;
+
+            if (!rawValue) {
+              return;
+            }
+
+            const code = extractJoinCodeFromQr(rawValue);
+
+            if (!code) {
+              failScanning(
+                "Invalid QR code. Scan the Director join code or enter it manually.",
+              );
+              return;
+            }
+
+            stopCamera();
+            onScan(code);
+          } catch {
+            failScanning(
+              "Camera scanning unavailable. Enter the code manually.",
+            );
+          }
+        }, 350);
+      } catch {
+        failScanning(
+          "Camera scanning unavailable. Enter the code manually.",
+        );
+      }
+    };
+
+    void startScanning();
+
+    return () => {
+      isCancelled = true;
+      stopCamera();
+    };
+  }, [onScan, onScanError]);
+
+  return (
+    <div
+      aria-labelledby="qr-scanner-title"
+      aria-modal="true"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm md:hidden"
+      role="dialog"
+    >
+      <section className="w-full max-w-md rounded-xl border border-[#8b5cf6]/45 bg-[#0b1020] p-4 shadow-2xl shadow-black/70">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#a78bfa]">
+              QR Scanner
+            </p>
+            <h2
+              className="mt-1 text-xl font-bold text-white"
+              id="qr-scanner-title"
+            >
+              Scan Show Code
+            </h2>
+          </div>
+          <button
+            aria-label="Close QR scanner"
+            className="flex h-11 w-11 touch-manipulation items-center justify-center rounded-lg border border-white/15 text-white active:bg-white/10"
+            onClick={onClose}
+            type="button"
+          >
+            X
+          </button>
+        </div>
+
+        <div className="mt-4 overflow-hidden rounded-xl border border-white/10 bg-black">
+          <video
+            className="aspect-[3/4] w-full object-cover"
+            muted
+            playsInline
+            ref={videoRef}
+          />
+        </div>
+
+        <p className="mt-3 text-sm font-semibold text-[#cbd5e1]">
+          {localError ?? status}
+        </p>
+        {localError ? (
+          <p className="mt-2 rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-xs font-semibold leading-5 text-[#fde68a]">
+            Camera scanning unavailable. Enter the code manually.
+          </p>
+        ) : null}
+      </section>
     </div>
   );
 }

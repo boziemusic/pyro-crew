@@ -15,6 +15,7 @@ import {
   getIssueStatusClassName,
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
+import { JoinCodeQr } from "@/components/join-code-qr";
 import { DirectorAttentionQueue } from "@/components/director-attention-queue";
 import {
   DirectorTechLocationMap,
@@ -28,6 +29,7 @@ import {
   createTechnicianNotice,
   useActiveAdditionalTechnicianAssignments,
   useShowTechnicianNames,
+  useShowTechnicianPresence,
 } from "@/components/collaboration-store";
 import {
   assignIssueToTechnician,
@@ -266,6 +268,10 @@ export default function DirectorConsolePage() {
   );
   const { technicianNames: joinedTechnicianNames } =
     useShowTechnicianNames(activeShow?.id, sessionForActiveShow?.id);
+  const { presenceByTechnician } = useShowTechnicianPresence(
+    activeShow?.id,
+    sessionForActiveShow?.id,
+  );
   const isScripted = activeShow?.show_mode === "scripted";
   const isManual = activeShow?.show_mode === "manual";
   const [channelNumber, setChannelNumber] = useState("");
@@ -878,6 +884,11 @@ export default function DirectorConsolePage() {
         return {
           ...technician,
           activeIssues,
+          isConnected:
+            getTimestampValue(presenceByTechnician[technician.id]) > 0 &&
+            (timerNow ?? 0) -
+              getTimestampValue(presenceByTechnician[technician.id]) <
+              30000,
           hasAttention: activeIssues.some(({ issue }) =>
             overviewAttentionStatuses.has(issue.status),
           ),
@@ -921,9 +932,11 @@ export default function DirectorConsolePage() {
       technicianOptions,
       latestHistoricalTechnicianByIssue,
       latestIssueActionAt,
+      presenceByTechnician,
       sessionForActiveShow?.id,
       technicianAssignmentTimes,
       technicianAssignments,
+      timerNow,
     ],
   );
   const technicianMapLocations = useMemo<TechnicianMapLocation[]>(
@@ -1262,6 +1275,33 @@ export default function DirectorConsolePage() {
     setSessionMessage(null);
     setIsLoadingSessionSummary(true);
 
+    if (sessionForActiveShow.status === "active") {
+      const { error: endError } = await supabase
+        .from("continuity_sessions")
+        .update({
+          ended_at: proposedEndAt,
+          ended_by_user_id: null,
+          status: "ended",
+        })
+        .eq("id", sessionForActiveShow.id)
+        .eq("show_id", sessionForActiveShow.show_id);
+
+      if (endError) {
+        setSessionSummaryError(
+          getContinuitySessionPolicyMessage(
+            `Could not end continuity session: ${endError.message}.`,
+          ),
+        );
+        setIsLoadingSessionSummary(false);
+        return;
+      }
+
+      setActiveContinuitySession({
+        ...sessionForActiveShow,
+        status: "ended",
+      });
+    }
+
     const { data: sessionIssuesData, error: issuesError } = await supabase
       .from("issues")
       .select(
@@ -1449,28 +1489,32 @@ export default function DirectorConsolePage() {
     setIsEndingSession(true);
     setSessionMessage(null);
 
-    const { error } = await supabase
-      .from("continuity_sessions")
-      .update({
-        ended_at: new Date().toISOString(),
-        ended_by_user_id: null,
-        status: "ended",
-      })
-      .eq("id", sessionForActiveShow.id)
-      .eq("show_id", sessionForActiveShow.show_id);
+    if (sessionForActiveShow.status === "active") {
+      const { error } = await supabase
+        .from("continuity_sessions")
+        .update({
+          ended_at: new Date().toISOString(),
+          ended_by_user_id: null,
+          status: "ended",
+        })
+        .eq("id", sessionForActiveShow.id)
+        .eq("show_id", sessionForActiveShow.show_id);
 
-    if (error) {
-      setSessionMessage(
-        getContinuitySessionPolicyMessage(
-          `Could not end continuity session: ${error.message}.`,
-        ),
-      );
-    } else {
-      setActiveContinuitySession(null);
-      setEndSessionStep(null);
-      setEndSessionSummary(null);
-      setSessionMessage("Continuity session ended.");
+      if (error) {
+        setSessionMessage(
+          getContinuitySessionPolicyMessage(
+            `Could not end continuity session: ${error.message}.`,
+          ),
+        );
+        setIsEndingSession(false);
+        return;
+      }
     }
+
+    setActiveContinuitySession(null);
+    setEndSessionStep(null);
+    setEndSessionSummary(null);
+    setSessionMessage("Continuity session ended.");
 
     setIsEndingSession(false);
   };
@@ -1636,19 +1680,22 @@ export default function DirectorConsolePage() {
                 Mouse Over For Join Code
               </button>
               <div
-                className="invisible absolute right-0 top-full z-30 mt-2 min-w-52 translate-y-1 rounded-lg border border-[#8b5cf6]/45 bg-[#070b18] p-4 text-center opacity-0 shadow-2xl shadow-black/70 transition duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
+                className="invisible absolute right-0 top-full z-30 mt-2 grid min-w-56 translate-y-1 gap-3 rounded-lg border border-[#8b5cf6]/45 bg-[#070b18] p-4 text-center opacity-0 shadow-2xl shadow-black/70 transition duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
                 id="technician-join-code"
                 role="tooltip"
               >
                 <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#94a3b8]">
                   Technician Join Code
                 </p>
+                <JoinCodeQr
+                  className="mx-auto h-36 w-36"
+                  code={activeShow.show_code}
+                />
                 <p className="mt-2 font-mono text-2xl font-bold tracking-[0.25em] text-white">
                   {activeShow.show_code ?? "Not assigned"}
                 </p>
               </div>
             </div>
-            {/* TODO: QR code will encode a technician join URL containing the show_code. */}
           </div>
         ) : null}
         <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
@@ -1656,6 +1703,7 @@ export default function DirectorConsolePage() {
             <TechOverviewCard
               currentIssue={technician.currentIssue}
               hasAttention={technician.hasAttention}
+              isConnected={technician.isConnected}
               key={technician.id}
               loadCount={technician.activeIssues.length}
               now={timerNow}
@@ -2369,13 +2417,12 @@ export default function DirectorConsolePage() {
                 className="rounded-md bg-[#b91c1c] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 disabled={
                   isEndingSession ||
-                  isLoadingSessionSummary ||
-                  Boolean(sessionSummaryError)
+                  isLoadingSessionSummary
                 }
                 onClick={() => void handleEndSession()}
                 type="button"
               >
-                {isEndingSession ? "Ending..." : "End Session"}
+                {isEndingSession ? "Closing..." : "Close Summary"}
               </button>
             </footer>
           </div>
@@ -2419,6 +2466,7 @@ function ReportRow({ label, value }: { label: string; value: string }) {
 function TechOverviewCard({
   currentIssue,
   hasAttention,
+  isConnected,
   loadCount,
   now,
   queueCount,
@@ -2432,6 +2480,7 @@ function TechOverviewCard({
     assignedAt: string | null;
   } | null;
   hasAttention: boolean;
+  isConnected: boolean;
   loadCount: number;
   now: number | null;
   queueCount: number;
@@ -2462,6 +2511,15 @@ function TechOverviewCard({
           className="pointer-events-none absolute inset-0 animate-pulse rounded-lg border-2 border-[#ef4444]/70 shadow-[inset_0_0_12px_rgba(239,68,68,0.22)]"
         />
       ) : null}
+      <span
+        aria-label={isConnected ? "Connected" : "Disconnected"}
+        className={`absolute bottom-2 right-2 h-2.5 w-2.5 rounded-full ${
+          isConnected
+            ? "bg-[#22c55e] shadow-[0_0_8px_rgba(34,197,94,0.75)]"
+            : "bg-[#ef4444] shadow-[0_0_8px_rgba(239,68,68,0.7)]"
+        }`}
+        role="status"
+      />
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-white">
           {technicianName}

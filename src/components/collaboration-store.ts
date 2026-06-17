@@ -47,6 +47,11 @@ export type HandoffNoticePayload = {
 
 const COLLABORATION_EVENT = "pyro-crew-collaboration-change";
 
+function getTimestampValue(value: string | null | undefined) {
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
 function announceCollaborationChange() {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(COLLABORATION_EVENT));
@@ -337,7 +342,19 @@ export async function recordJoinedTechnician({
   }
 
   if (existing && existing.length > 0) {
-    return { error: null };
+    const result = await supabase
+      .from("technician_notices")
+      .update({
+        acknowledged_at: new Date().toISOString(),
+        session_id: sessionId,
+      })
+      .eq("id", existing[0].id);
+
+    if (!result.error) {
+      announceCollaborationChange();
+    }
+
+    return { error: result.error };
   }
 
   const result = await supabase.from("technician_notices").insert({
@@ -349,6 +366,7 @@ export async function recordJoinedTechnician({
     status: "acknowledged",
     technician_name: technicianId,
     title: "Technician Joined",
+    acknowledged_at: new Date().toISOString(),
   });
 
   if (!result.error) {
@@ -462,6 +480,79 @@ export function useShowTechnicianNames(
   }, [refresh]);
 
   return { error, refresh, technicianNames };
+}
+
+export function useShowTechnicianPresence(
+  showId: string | undefined,
+  sessionId: string | null | undefined,
+) {
+  const [presenceByTechnician, setPresenceByTechnician] = useState<
+    Record<string, string>
+  >({});
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!showId) {
+      setPresenceByTechnician({});
+      setError(null);
+      return;
+    }
+
+    const supabase = createSupabaseBrowserClient();
+    let query = supabase
+      .from("technician_notices")
+      .select("technician_name, acknowledged_at, created_at")
+      .eq("show_id", showId)
+      .eq("notice_type", "technician_joined");
+
+    if (sessionId) {
+      query = query.eq("session_id", sessionId);
+    }
+
+    const { data, error: queryError } = await query;
+
+    if (queryError) {
+      setError(queryError.message);
+      return;
+    }
+
+    const nextPresence: Record<string, string> = {};
+
+    (data ?? []).forEach((row) => {
+      const technicianName = row.technician_name?.trim();
+      const activeAt = row.acknowledged_at ?? row.created_at;
+
+      if (!technicianName || !activeAt) {
+        return;
+      }
+
+      if (
+        !nextPresence[technicianName] ||
+        getTimestampValue(activeAt) >
+          getTimestampValue(nextPresence[technicianName])
+      ) {
+        nextPresence[technicianName] = activeAt;
+      }
+    });
+
+    setPresenceByTechnician(nextPresence);
+    setError(null);
+  }, [sessionId, showId]);
+
+  useEffect(() => {
+    const handleChange = () => void refresh();
+    const initialId = window.setTimeout(handleChange, 0);
+    const intervalId = window.setInterval(handleChange, 5000);
+    window.addEventListener(COLLABORATION_EVENT, handleChange);
+
+    return () => {
+      window.clearTimeout(initialId);
+      window.clearInterval(intervalId);
+      window.removeEventListener(COLLABORATION_EVENT, handleChange);
+    };
+  }, [refresh]);
+
+  return { error, presenceByTechnician, refresh };
 }
 
 export function parseHandoffNoticePayload(
