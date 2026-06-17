@@ -10,6 +10,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useRouter } from "next/navigation";
+import jsQR from "jsqr";
 import {
   createSupabaseBrowserClient,
   isSupabaseConfigured,
@@ -1975,10 +1976,15 @@ function QrScannerModal({
   useEffect(() => {
     let isCancelled = false;
     let intervalId: number | null = null;
+    const canvas = document.createElement("canvas");
+    const canvasContext = canvas.getContext("2d", {
+      willReadFrequently: true,
+    });
 
     const stopCamera = () => {
       if (intervalId) {
         window.clearInterval(intervalId);
+        intervalId = null;
       }
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -1997,7 +2003,7 @@ function QrScannerModal({
     const startScanning = async () => {
       const BarcodeDetector = getBarcodeDetectorConstructor();
 
-      if (!BarcodeDetector || !navigator.mediaDevices?.getUserMedia) {
+      if (!navigator.mediaDevices?.getUserMedia) {
         failScanning(
           "Camera scanning unavailable. Enter the code manually.",
         );
@@ -2009,6 +2015,8 @@ function QrScannerModal({
           audio: false,
           video: {
             facingMode: { ideal: "environment" },
+            height: { ideal: 1280 },
+            width: { ideal: 720 },
           },
         });
 
@@ -2021,22 +2029,53 @@ function QrScannerModal({
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          videoRef.current.muted = true;
+          videoRef.current.playsInline = true;
           await videoRef.current.play();
         }
 
-        const detector = new BarcodeDetector({ formats: ["qr_code"] });
+        const detector = BarcodeDetector
+          ? new BarcodeDetector({ formats: ["qr_code"] })
+          : null;
         setStatus("Point camera at the Director QR code.");
 
         intervalId = window.setInterval(async () => {
           const video = videoRef.current;
 
-          if (!video || video.readyState < 2) {
+          if (
+            !video ||
+            video.readyState < 2 ||
+            !video.videoWidth ||
+            !video.videoHeight
+          ) {
             return;
           }
 
           try {
-            const detectedCodes = await detector.detect(video);
-            const rawValue = detectedCodes[0]?.rawValue;
+            let rawValue: string | undefined;
+
+            if (detector) {
+              const detectedCodes = await detector.detect(video);
+              rawValue = detectedCodes[0]?.rawValue;
+            } else if (canvasContext) {
+              canvas.width = video.videoWidth;
+              canvas.height = video.videoHeight;
+              canvasContext.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const imageData = canvasContext.getImageData(
+                0,
+                0,
+                canvas.width,
+                canvas.height,
+              );
+              rawValue =
+                jsQR(imageData.data, imageData.width, imageData.height)
+                  ?.data ?? undefined;
+            } else {
+              failScanning(
+                "Camera scanning unavailable. Enter the code manually.",
+              );
+              return;
+            }
 
             if (!rawValue) {
               return;
@@ -2053,7 +2092,8 @@ function QrScannerModal({
 
             stopCamera();
             onScan(code);
-          } catch {
+          } catch (scanError) {
+            console.error("QR scan failed", scanError);
             failScanning(
               "Camera scanning unavailable. Enter the code manually.",
             );
@@ -2106,6 +2146,7 @@ function QrScannerModal({
 
         <div className="mt-4 overflow-hidden rounded-xl border border-white/10 bg-black">
           <video
+            autoPlay
             className="aspect-[3/4] w-full object-cover"
             muted
             playsInline
