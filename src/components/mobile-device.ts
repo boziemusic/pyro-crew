@@ -7,12 +7,11 @@ function getMobileDeviceSnapshot() {
     return false;
   }
 
-  const hasCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
-  const hasNoHover = window.matchMedia("(hover: none)").matches;
-  const hasTouchPoints = navigator.maxTouchPoints > 0;
+  const userAgent = navigator.userAgent;
+  const isKnownMobileOrTablet = /iPhone|iPad|Android/i.test(userAgent);
   const isNarrowViewport = window.innerWidth < 768;
 
-  return hasCoarsePointer || hasNoHover || hasTouchPoints || isNarrowViewport;
+  return isKnownMobileOrTablet || isNarrowViewport;
 }
 
 function subscribeToMobileDeviceChanges(onStoreChange: () => void) {
@@ -20,17 +19,10 @@ function subscribeToMobileDeviceChanges(onStoreChange: () => void) {
     return () => undefined;
   }
 
-  const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
-  const hoverQuery = window.matchMedia("(hover: none)");
-
-  coarsePointerQuery.addEventListener("change", onStoreChange);
-  hoverQuery.addEventListener("change", onStoreChange);
   window.addEventListener("resize", onStoreChange);
   window.addEventListener("orientationchange", onStoreChange);
 
   return () => {
-    coarsePointerQuery.removeEventListener("change", onStoreChange);
-    hoverQuery.removeEventListener("change", onStoreChange);
     window.removeEventListener("resize", onStoreChange);
     window.removeEventListener("orientationchange", onStoreChange);
   };
