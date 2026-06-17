@@ -16,7 +16,7 @@ const SETTINGS_STORAGE_KEY = "pyro-crew-app-feedback-settings";
 const SETTINGS_EVENT = "pyro-crew-app-feedback-settings-change";
 const DIAGNOSTICS_EVENT = "pyro-crew-app-feedback-diagnostics-change";
 const DEFAULT_SETTINGS: AppFeedbackSettings = {
-  soundsEnabled: false,
+  soundsEnabled: true,
   vibrationEnabled: true,
 };
 const DEFAULT_DIAGNOSTICS: AppFeedbackDiagnostics = {
@@ -28,7 +28,6 @@ const DEFAULT_DIAGNOSTICS: AppFeedbackDiagnostics = {
 
 const soundPaths = {
   directorAssistanceNeeded: "/sounds/director-assistance-needed.mp3",
-  verificationRequestedPrimary: "/sounds/verification-requested-1.mp3",
   success: "/sounds/success.mp3",
   uiClick: "/sounds/ui-click.mp3",
   warning: "/sounds/warning.mp3",
@@ -39,6 +38,56 @@ const soundPools = {
     "/sounds/additional-tech-requested-1.mp3",
     "/sounds/additional-tech-requested-2.mp3",
     "/sounds/additional-tech-requested-3.mp3",
+  ],
+  directorTechJoined: [
+    "/sounds/director-tech-joined-1.mp3",
+    "/sounds/director-tech-joined-2.mp3",
+    "/sounds/director-tech-joined-3.mp3",
+  ],
+  techJoined: [
+    "/sounds/tech-joined-1.mp3",
+    "/sounds/tech-joined-2.mp3",
+    "/sounds/tech-joined-3.mp3",
+  ],
+  techInitialIssueAssignment: [
+    "/sounds/tech-initial-issue-assignment-1.mp3",
+    "/sounds/tech-initial-issue-assignment-2.mp3",
+    "/sounds/tech-initial-issue-assignment-3.mp3",
+  ],
+  techFixVerified: [
+    "/sounds/tech-fix-verified-1.mp3",
+    "/sounds/tech-fix-verified-2.mp3",
+    "/sounds/tech-fix-verified-3.mp3",
+  ],
+  techAdditionalHelperAssigned: [
+    "/sounds/tech-additionaltechrequested-helpertech-1.mp3",
+    "/sounds/tech-additionaltechrequested-helpertech-2.mp3",
+    "/sounds/tech-additionaltechrequested-helpertech-3.mp3",
+  ],
+  techAdditionalRequestAccepted: [
+    "/sounds/tech-additionaltechrequested-accepted-1.mp3",
+    "/sounds/tech-additionaltechrequested-accepted-2.mp3",
+    "/sounds/tech-additionaltechrequested-accepted-3.mp3",
+  ],
+  techAdditionalRequestDeclined: [
+    "/sounds/tech-additionaltechrequested-declined-1.mp3",
+    "/sounds/tech-additionaltechrequested-declined-2.mp3",
+    "/sounds/tech-additionaltechrequested-declined-3.mp3",
+  ],
+  techRetrievingParts: [
+    "/sounds/tech-retrievingparts-1.mp3",
+    "/sounds/tech-retrievingparts-2.mp3",
+    "/sounds/tech-retrievingparts-3.mp3",
+  ],
+  techNotFixed: [
+    "/sounds/tech-fix-notfixed-1.mp3",
+    "/sounds/tech-fix-notfixed-2.mp3",
+    "/sounds/tech-fix-notfixed-3.mp3",
+  ],
+  techUnfixable: [
+    "/sounds/tech-unfixable-1.mp3",
+    "/sounds/tech-unfixable-2.mp3",
+    "/sounds/tech-unfixable-3.mp3",
   ],
   verificationRequested: [
     "/sounds/verification-requested-1.mp3",
@@ -360,45 +409,6 @@ function choosePooledSound(poolName: keyof typeof soundPools) {
   return selection;
 }
 
-export async function testAppFeedbackSound() {
-  updateDiagnostics({
-    lastSoundRequested: "Test Sound (WebAudio tone)",
-    lastSoundResult: "idle",
-    lastSoundDetail: "Attempting audio unlock.",
-  });
-
-  if (!(await unlockAppFeedback())) {
-    updateDiagnostics({
-      lastSoundResult: "blocked",
-      lastSoundDetail: "The browser blocked the test sound.",
-    });
-    return false;
-  }
-
-  const played = await playGeneratedTone(640, 160, 0.06);
-  updateDiagnostics({
-    audioUnlocked: played,
-    lastSoundResult: played ? "played" : "blocked",
-    lastSoundDetail: played
-      ? "WebAudio test tone played."
-      : "WebAudio test tone was blocked.",
-  });
-
-  if (!played) {
-    return false;
-  }
-
-  await playSound(
-    "Test Sound MP3",
-    soundPaths.verificationRequestedPrimary,
-    640,
-    160,
-    { ignoreSettings: true },
-  );
-
-  return played;
-}
-
 export function playUiClick() {
   void playSound("UI Click", soundPaths.uiClick, 520, 55);
 }
@@ -426,6 +436,96 @@ export function playAdditionalTechRequested() {
     choosePooledSound("additionalTechRequested"),
     390,
     220,
+  );
+}
+
+export function playDirectorTechJoined() {
+  void playSound(
+    "Technician Joined",
+    choosePooledSound("directorTechJoined"),
+    580,
+    180,
+  );
+}
+
+export function playTechnicianJoined() {
+  void playSound(
+    "Joined Session",
+    choosePooledSound("techJoined"),
+    700,
+    180,
+  );
+}
+
+export function playTechnicianInitialIssueAssignment() {
+  void playSound(
+    "Initial Issue Assignment",
+    choosePooledSound("techInitialIssueAssignment"),
+    520,
+    180,
+  );
+}
+
+export function playTechnicianFixVerified() {
+  void playSound(
+    "Fix Verified",
+    choosePooledSound("techFixVerified"),
+    760,
+    220,
+  );
+}
+
+export function playTechAdditionalHelperAssigned() {
+  void playSound(
+    "Additional Helper Assignment",
+    choosePooledSound("techAdditionalHelperAssigned"),
+    610,
+    220,
+  );
+}
+
+export function playTechAdditionalRequestAccepted() {
+  void playSound(
+    "Additional Tech Request Accepted",
+    choosePooledSound("techAdditionalRequestAccepted"),
+    640,
+    220,
+  );
+}
+
+export function playTechAdditionalRequestDeclined() {
+  void playSound(
+    "Additional Tech Request Declined",
+    choosePooledSound("techAdditionalRequestDeclined"),
+    300,
+    220,
+  );
+}
+
+export function playTechRetrievingParts() {
+  void playSound(
+    "Retrieving Parts",
+    choosePooledSound("techRetrievingParts"),
+    470,
+    220,
+  );
+}
+
+export function playTechNotFixed() {
+  void playSound(
+    "Not Fixed",
+    choosePooledSound("techNotFixed"),
+    260,
+    240,
+  );
+}
+
+export function playTechUnfixable() {
+  void playSound(
+    "Unfixable",
+    choosePooledSound("techUnfixable"),
+    220,
+    260,
   );
 }
 

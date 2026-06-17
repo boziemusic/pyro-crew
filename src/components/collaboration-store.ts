@@ -433,6 +433,46 @@ export async function recordJoinedTechnician({
   return { error: result.error };
 }
 
+export async function removeTechnicianFromSession({
+  sessionId,
+  showId,
+  technicianId,
+}: {
+  sessionId: string;
+  showId: string;
+  technicianId: TemporaryTechnicianId;
+}) {
+  const supabase = createSupabaseBrowserClient();
+  const removedAt = new Date().toISOString();
+  const deleteResult = await supabase
+    .from("technician_notices")
+    .delete()
+    .eq("show_id", showId)
+    .eq("session_id", sessionId)
+    .eq("technician_name", technicianId)
+    .eq("notice_type", "technician_joined");
+
+  if (deleteResult.error) {
+    return { error: deleteResult.error };
+  }
+
+  const noticeResult = await createTechnicianNotice({
+    issueId: null,
+    message: `Removed from session at ${removedAt}.`,
+    noticeType: "technician_removed",
+    sessionId,
+    showId,
+    technicianId,
+    title: "Removed From Session",
+  });
+
+  if (!noticeResult.error) {
+    announceCollaborationChange();
+  }
+
+  return { error: noticeResult.error };
+}
+
 export async function recordTechnicianHeartbeat({
   sessionId,
   showId,
@@ -561,6 +601,64 @@ export function useShowTechnicianNames(
     }
 
     setTechnicianNames(data);
+    setError(null);
+  }, [sessionId, showId]);
+
+  useEffect(() => {
+    const handleChange = () => void refresh();
+    const initialId = window.setTimeout(handleChange, 0);
+    const intervalId = window.setInterval(handleChange, 5000);
+    window.addEventListener(COLLABORATION_EVENT, handleChange);
+
+    return () => {
+      window.clearTimeout(initialId);
+      window.clearInterval(intervalId);
+      window.removeEventListener(COLLABORATION_EVENT, handleChange);
+    };
+  }, [refresh]);
+
+  return { error, refresh, technicianNames };
+}
+
+export function useJoinedSessionTechnicianNames(
+  showId: string | undefined,
+  sessionId: string | null | undefined,
+) {
+  const [technicianNames, setTechnicianNames] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!showId || !sessionId) {
+      setTechnicianNames([]);
+      setError(null);
+      return;
+    }
+
+    const supabase = createSupabaseBrowserClient();
+    const { data, error: queryError } = await supabase
+      .from("technician_notices")
+      .select("technician_name")
+      .eq("show_id", showId)
+      .eq("session_id", sessionId)
+      .eq("notice_type", "technician_joined");
+
+    if (queryError) {
+      setError(queryError.message);
+      return;
+    }
+
+    const names = new Set<string>();
+    (data ?? []).forEach((row) => {
+      if (row.technician_name?.trim()) {
+        names.add(row.technician_name.trim());
+      }
+    });
+
+    setTechnicianNames(
+      [...names].sort((left, right) =>
+        left.localeCompare(right, undefined, { sensitivity: "base" }),
+      ),
+    );
     setError(null);
   }, [sessionId, showId]);
 

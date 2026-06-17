@@ -50,12 +50,17 @@ import {
 } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { TechnicianMapAssist } from "@/components/technician-map-assist";
-import {
-  MobileTechnicianAlertToggle,
-  MobileTechnicianSoundDiagnostics,
-} from "@/components/app-feedback-controls";
+import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
 import {
   playSuccess,
+  playTechAdditionalHelperAssigned,
+  playTechAdditionalRequestAccepted,
+  playTechAdditionalRequestDeclined,
+  playTechNotFixed,
+  playTechRetrievingParts,
+  playTechUnfixable,
+  playTechnicianFixVerified,
+  playTechnicianInitialIssueAssignment,
   playUiClick,
   playWarning,
   vibrate,
@@ -407,6 +412,45 @@ function isDirectorReturnNotice(notice: TechnicianNotice) {
   );
 }
 
+function playTechnicianNoticeSound(notice: TechnicianNotice) {
+  if (notice.notice_type === "verification_passed") {
+    playTechnicianFixVerified();
+    return true;
+  }
+
+  if (notice.notice_type === "verification_failed") {
+    playTechNotFixed();
+    return true;
+  }
+
+  if (notice.notice_type === "retrieving_parts") {
+    playTechRetrievingParts();
+    return true;
+  }
+
+  if (notice.notice_type === "unfixable") {
+    playTechUnfixable();
+    return true;
+  }
+
+  if (notice.notice_type === "additional_help_assigned") {
+    playTechAdditionalHelperAssigned();
+    return true;
+  }
+
+  if (notice.notice_type === "additional_tech_approved") {
+    playTechAdditionalRequestAccepted();
+    return true;
+  }
+
+  if (notice.notice_type === "additional_tech_declined") {
+    playTechAdditionalRequestDeclined();
+    return true;
+  }
+
+  return false;
+}
+
 function getAdditionalHelperName(message: string | null) {
   const match =
     message?.match(/^(.+?)\s+was assigned to help you\./i) ??
@@ -596,6 +640,8 @@ export default function TechnicianConsolePage() {
   >(null);
   const [directorReturnPopup, setDirectorReturnPopup] =
     useState<DirectorReturnPopup | null>(null);
+  const [removedSessionNotice, setRemovedSessionNotice] =
+    useState<TechnicianNotice | null>(null);
   const [sessionEndedPopup, setSessionEndedPopup] = useState<{
     entries: TechnicianScoreboardEntry[];
     error: string | null;
@@ -631,6 +677,7 @@ export default function TechnicianConsolePage() {
 
     const resetId = window.setTimeout(() => {
       setDirectorReturnPopup(null);
+      setRemovedSessionNotice(null);
       setSessionEndedPopup(null);
     }, 0);
 
@@ -1187,7 +1234,7 @@ export default function TechnicianConsolePage() {
           playWarning();
           vibrate([120, 60, 120]);
         } else if (hasNormalAlert) {
-          playWarning();
+          playTechnicianInitialIssueAssignment();
           vibrate([80]);
         }
       }
@@ -1482,9 +1529,21 @@ export default function TechnicianConsolePage() {
       : [];
 
     if (newNotices.length > 0) {
-      playWarning();
+      const soundNotice =
+        newNotices.find(isDirectorReturnNotice) ?? newNotices[0];
+
+      if (!soundNotice || !playTechnicianNoticeSound(soundNotice)) {
+        playWarning();
+      }
       vibrate([120, 60, 120]);
       void refreshIssues();
+
+      const removalNotice = newNotices.find(
+        (notice) => notice.notice_type === "technician_removed",
+      );
+      if (removalNotice) {
+        setRemovedSessionNotice(removalNotice);
+      }
 
       newNotices
         .filter(isDirectorReturnNotice)
@@ -1499,6 +1558,24 @@ export default function TechnicianConsolePage() {
 
     noticeAlertSnapshot.current = nextSnapshot;
   }, [notices, noticesLoading, refreshIssues]);
+
+  useEffect(() => {
+    if (removedSessionNotice || noticesLoading) {
+      return;
+    }
+
+    const removalNotice = notices.find(
+      (notice) => notice.notice_type === "technician_removed",
+    );
+
+    if (removalNotice) {
+      const timeoutId = window.setTimeout(() => {
+        setRemovedSessionNotice(removalNotice);
+      }, 0);
+
+      return () => window.clearTimeout(timeoutId);
+    }
+  }, [notices, noticesLoading, removedSessionNotice]);
 
   useEffect(() => {
     if (directorReturnPopup) {
@@ -2228,7 +2305,6 @@ export default function TechnicianConsolePage() {
               >
                 Clear Active Show
               </button>
-              <MobileTechnicianSoundDiagnostics />
             </div>
           ) : null}
           </div>
@@ -2772,6 +2848,44 @@ export default function TechnicianConsolePage() {
           );
         })}
       </nav>
+
+      {removedSessionNotice ? (
+        <div
+          aria-labelledby="technician-removed-title"
+          aria-modal="true"
+          className="fixed inset-0 z-[76] flex items-center justify-center bg-black/85 p-5 backdrop-blur-sm md:hidden"
+          role="dialog"
+        >
+          <section className="w-full max-w-md rounded-xl border border-[#ef4444]/45 bg-[#0b1020] p-6 shadow-2xl shadow-black/70">
+            <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#fecaca]">
+              Session Access Removed
+            </p>
+            <h2
+              className="mt-4 text-2xl font-extrabold leading-8 text-white"
+              id="technician-removed-title"
+            >
+              You have been removed from this session by the Director.
+            </h2>
+            <p className="mt-3 text-base leading-7 text-[#dbe4ef]">
+              Your active show and session will be cleared on this device.
+            </p>
+            <button
+              autoFocus
+              className="mt-6 min-h-14 w-full touch-manipulation rounded-lg bg-[#7f1d1d] px-5 py-3 text-lg font-bold text-white transition active:bg-[#991b1b]"
+              onClick={() => {
+                void acknowledgeTechnicianNotice(removedSessionNotice.id);
+                setRemovedSessionNotice(null);
+                setActiveContinuitySession(null);
+                setActiveShow(null);
+                router.push("/shows");
+              }}
+              type="button"
+            >
+              OK
+            </button>
+          </section>
+        </div>
+      ) : null}
 
       {directorReturnPopup && directorReturnContent ? (
         <div

@@ -27,7 +27,7 @@ import {
   createAdditionalTechnicianAssignment,
   createTechnicianNotice,
   useActiveAdditionalTechnicianAssignments,
-  useShowTechnicianNames,
+  useJoinedSessionTechnicianNames,
 } from "@/components/collaboration-store";
 import { getHistoryWriteFailureMessage } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
@@ -148,7 +148,7 @@ export function DirectorAttentionQueue({
       : null,
   );
   const { technicianNames: joinedTechnicianNames } =
-    useShowTechnicianNames(
+    useJoinedSessionTechnicianNames(
       activeShow?.id,
       activeSession && activeSession.show_id === activeShow?.id
         ? activeSession.id
@@ -604,12 +604,21 @@ export function DirectorAttentionQueue({
       const noticeResults = await Promise.all([
         createTechnicianNotice({
           issueId: issue.id,
-          message: null,
-          noticeType: "additional_tech_approved",
+          message: additionalTechnicianNote,
+          noticeType: "additional_help_assigned",
           sessionId,
           showId: activeShow.id,
           technicianId,
           title: "Additional Technician Assignment",
+        }),
+        createTechnicianNotice({
+          issueId: issue.id,
+          message: additionalTechnicianNote,
+          noticeType: "additional_tech_approved",
+          sessionId,
+          showId: activeShow.id,
+          technicianId: primaryTechnician,
+          title: "Additional Technician Approved",
         }),
       ]);
       const noticeError = noticeResults.find((result) => result.error)?.error;
@@ -1036,15 +1045,32 @@ function AdditionalTechnicianControl({
   onAssign: (technicianId: TemporaryTechnicianId) => void;
   technicianOptions: { id: TemporaryTechnicianId; label: string }[];
 }) {
-  const availableTechnicians = technicianOptions.filter(
-    (technician) => technician.id !== originalTechnician,
+  const availableTechnicians = useMemo(
+    () =>
+      technicianOptions.filter(
+        (technician) => technician.id !== originalTechnician,
+      ),
+    [originalTechnician, technicianOptions],
   );
   const [selectedTechnician, setSelectedTechnician] =
-    useState<TemporaryTechnicianId>(
+    useState<TemporaryTechnicianId | "">(
       currentTechnician && currentTechnician !== originalTechnician
         ? currentTechnician
-        : availableTechnicians[0]?.id ?? "tech_1",
+        : "",
     );
+  const selectedTechnicianIsValid = availableTechnicians.some(
+    (technician) => technician.id === selectedTechnician,
+  );
+  const currentTechnicianIsValid =
+    Boolean(currentTechnician) &&
+    availableTechnicians.some(
+      (technician) => technician.id === currentTechnician,
+    );
+  const selectedTechnicianValue = selectedTechnicianIsValid
+    ? selectedTechnician
+    : currentTechnicianIsValid
+      ? currentTechnician
+      : "";
 
   return (
     <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-3">
@@ -1057,8 +1083,9 @@ function AdditionalTechnicianControl({
         onChange={(event) =>
           setSelectedTechnician(event.target.value as TemporaryTechnicianId)
         }
-        value={selectedTechnician}
+        value={selectedTechnicianValue}
       >
+        <option value="">Select technician</option>
         {availableTechnicians.map((technician) => (
           <option key={technician.id} value={technician.id}>
             {technician.label}
@@ -1066,8 +1093,13 @@ function AdditionalTechnicianControl({
         ))}
       </select>
       <button
-        className="mt-2 w-full rounded-md bg-[#6d28d9] px-2 py-2 text-xs font-bold text-white"
-        onClick={() => onAssign(selectedTechnician)}
+        className="mt-2 w-full rounded-md bg-[#6d28d9] px-2 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={!selectedTechnicianValue}
+        onClick={() => {
+          if (selectedTechnicianValue) {
+            onAssign(selectedTechnicianValue);
+          }
+        }}
         type="button"
       >
         Assign Additional Technician

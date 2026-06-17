@@ -2,17 +2,14 @@
 
 import { useEffect, useSyncExternalStore } from "react";
 import {
-  getAppFeedbackDiagnostics,
   getAppFeedbackSettings,
   setAppFeedbackSettings,
-  subscribeToAppFeedbackDiagnostics,
   subscribeToAppFeedbackSettings,
-  testAppFeedbackSound,
   unlockAppFeedback,
 } from "@/lib/app-feedback";
 
 const serverSettings = {
-  soundsEnabled: false,
+  soundsEnabled: true,
   vibrationEnabled: true,
 };
 
@@ -46,49 +43,6 @@ function useFeedbackSettings() {
   return settings;
 }
 
-function useFeedbackDiagnostics() {
-  return useSyncExternalStore(
-    subscribeToAppFeedbackDiagnostics,
-    getAppFeedbackDiagnostics,
-    getAppFeedbackDiagnostics,
-  );
-}
-
-function SoundDiagnosticsText({
-  className = "",
-}: {
-  className?: string;
-}) {
-  const settings = useFeedbackSettings();
-  const diagnostics = useFeedbackDiagnostics();
-
-  return (
-    <div className={`text-[10px] leading-4 text-[#94a3b8] ${className}`}>
-      <p>Sounds enabled: {settings.soundsEnabled ? "yes" : "no"}</p>
-      <p>Audio unlocked: {diagnostics.audioUnlocked ? "yes" : "no"}</p>
-      <p>Last sound attempted: {diagnostics.lastSoundRequested}</p>
-      <p>Last result: {diagnostics.lastSoundResult}</p>
-      {diagnostics.lastSoundDetail ? (
-        <p className="break-words text-[#cbd5e1]">
-          {diagnostics.lastSoundDetail}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function TestSoundButton({ className = "" }: { className?: string }) {
-  return (
-    <button
-      className={`rounded-md border border-[#8b5cf6]/35 bg-[#17102c] px-3 py-2 text-xs font-semibold text-white transition hover:border-[#c4b5fd] active:bg-[#211044] ${className}`}
-      onClick={() => void testAppFeedbackSound()}
-      type="button"
-    >
-      Test Sound
-    </button>
-  );
-}
-
 export function AppFeedbackControls() {
   const settings = useFeedbackSettings();
 
@@ -100,12 +54,12 @@ export function AppFeedbackControls() {
     });
 
     if (soundsEnabled) {
-      await testAppFeedbackSound();
+      await unlockAppFeedback();
     }
   };
 
   return (
-    <div className="flex items-start gap-2">
+    <div className="flex items-center">
       <button
         aria-pressed={settings.soundsEnabled}
         className="rounded-md border border-white/10 bg-[#0d1324] px-3 py-2 text-xs font-semibold text-[#cbd5e1] transition hover:border-[#8b5cf6]/55 hover:text-white"
@@ -114,10 +68,6 @@ export function AppFeedbackControls() {
       >
         Sounds: {settings.soundsEnabled ? "On" : "Off"}
       </button>
-      <div className="grid gap-1">
-        <TestSoundButton />
-        <SoundDiagnosticsText className="max-w-64 rounded-md border border-white/10 bg-[#050816]/80 p-2" />
-      </div>
     </div>
   );
 }
@@ -142,7 +92,7 @@ export function MobileTechnicianAlertToggle() {
     });
 
     if (soundsEnabled) {
-      await testAppFeedbackSound();
+      await unlockAppFeedback();
     }
   };
 
@@ -184,14 +134,5 @@ export function MobileTechnicianAlertToggle() {
         </span>
       ) : null}
     </button>
-  );
-}
-
-export function MobileTechnicianSoundDiagnostics() {
-  return (
-    <div className="mt-2 rounded-md border border-white/10 bg-[#050816]/80 p-2">
-      <TestSoundButton className="min-h-10 w-full" />
-      <SoundDiagnosticsText className="mt-2" />
-    </div>
   );
 }

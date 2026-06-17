@@ -47,6 +47,7 @@ import {
   restoreScriptEvents,
   type ScriptEventRow,
 } from "@/lib/script-events";
+import { playTechnicianJoined } from "@/lib/app-feedback";
 
 type ShowMode = "scripted" | "manual";
 type FiringSystem = ScriptAdapterKey;
@@ -1068,6 +1069,7 @@ function ConfiguredShowsWorkspace() {
         showId: show.id,
         technicianId: normalizedTechnicianName,
       });
+      playTechnicianJoined();
       router.push("/technician");
     } catch (error) {
       const errorMessage =

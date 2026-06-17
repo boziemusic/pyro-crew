@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import Link from "next/link";
@@ -27,8 +28,9 @@ import {
   completeAdditionalTechnicianAssignments,
   createHandoffNotices,
   createTechnicianNotice,
+  removeTechnicianFromSession,
   useActiveAdditionalTechnicianAssignments,
-  useShowTechnicianNames,
+  useJoinedSessionTechnicianNames,
 } from "@/components/collaboration-store";
 import {
   assignIssueToTechnician,
@@ -57,6 +59,7 @@ import {
 } from "@/lib/script-events";
 import {
   playSuccess,
+  playDirectorTechJoined,
   playUiClick,
   playWarning,
 } from "@/lib/app-feedback";
@@ -265,8 +268,14 @@ export default function DirectorConsolePage() {
     activeShow?.id,
     sessionForActiveShow?.id,
   );
-  const { technicianNames: joinedTechnicianNames } =
-    useShowTechnicianNames(activeShow?.id, sessionForActiveShow?.id);
+  const {
+    refresh: refreshSessionJoinedTechnicians,
+    technicianNames: sessionJoinedTechnicianNames,
+  } =
+    useJoinedSessionTechnicianNames(
+      activeShow?.id,
+      sessionForActiveShow?.id,
+    );
   const isScripted = activeShow?.show_mode === "scripted";
   const isManual = activeShow?.show_mode === "manual";
   const [channelNumber, setChannelNumber] = useState("");
@@ -333,6 +342,14 @@ export default function DirectorConsolePage() {
   const [sessionSummaryWarning, setSessionSummaryWarning] = useState<
     string | null
   >(null);
+  const [technicianRemovalTarget, setTechnicianRemovalTarget] =
+    useState<{
+      activeIssueCount: number;
+      id: TemporaryTechnicianId;
+      name: string;
+    } | null>(null);
+  const [isRemovingTechnician, setIsRemovingTechnician] = useState(false);
+  const joinedTechnicianSoundSnapshot = useRef<Set<string> | null>(null);
   const positionGroupNames = useMemo(
     () =>
       new Map(
@@ -422,6 +439,28 @@ export default function DirectorConsolePage() {
 
     return () => window.clearInterval(intervalId);
   }, []);
+
+  useEffect(() => {
+    if (!sessionForActiveShow) {
+      joinedTechnicianSoundSnapshot.current = null;
+      return;
+    }
+
+    const nextSnapshot = new Set(sessionJoinedTechnicianNames);
+    const previousSnapshot = joinedTechnicianSoundSnapshot.current;
+
+    if (previousSnapshot) {
+      const hasNewTechnician = sessionJoinedTechnicianNames.some(
+        (technicianName) => !previousSnapshot.has(technicianName),
+      );
+
+      if (hasNewTechnician) {
+        playDirectorTechJoined();
+      }
+    }
+
+    joinedTechnicianSoundSnapshot.current = nextSnapshot;
+  }, [sessionForActiveShow, sessionJoinedTechnicianNames]);
 
   const fetchIssues = useCallback(async () => {
     if (!activeShow) {
@@ -671,7 +710,7 @@ export default function DirectorConsolePage() {
 
   const technicianOptions = useMemo(() => {
     const names = new Set(
-      joinedTechnicianNames
+      sessionJoinedTechnicianNames
         .map((name) => name.trim())
         .filter(Boolean),
     );
@@ -709,7 +748,7 @@ export default function DirectorConsolePage() {
     activeIssueAssignments,
     additionalAssignments,
     issueAssignmentHistory,
-    joinedTechnicianNames,
+    sessionJoinedTechnicianNames,
     technicianAssignments,
   ]);
 
@@ -947,6 +986,46 @@ export default function DirectorConsolePage() {
       })),
     [technicianOverview],
   );
+
+  const confirmRemoveTechnician = async () => {
+    if (!technicianRemovalTarget || !activeShow || !sessionForActiveShow) {
+      return;
+    }
+
+    if (technicianRemovalTarget.activeIssueCount > 0) {
+      setAssignmentFeedback({
+        type: "error",
+        message:
+          "Reassign or resolve this technician's active issues before removing them.",
+      });
+      setTechnicianRemovalTarget(null);
+      return;
+    }
+
+    setIsRemovingTechnician(true);
+    const { error } = await removeTechnicianFromSession({
+      sessionId: sessionForActiveShow.id,
+      showId: activeShow.id,
+      technicianId: technicianRemovalTarget.id,
+    });
+
+    if (error) {
+      setAssignmentFeedback({
+        type: "error",
+        message: `Could not remove technician: ${error.message}`,
+      });
+    } else {
+      setAssignmentFeedback({
+        type: "success",
+        message: `${technicianRemovalTarget.name} removed from this session.`,
+      });
+      await refreshSessionJoinedTechnicians();
+    }
+
+    setIsRemovingTechnician(false);
+    setTechnicianRemovalTarget(null);
+  };
+
   const assignmentSuggestions = useMemo(() => {
     const resolveMarker = (positionName: string | null) => {
       if (!positionName) {
@@ -1689,11 +1768,19 @@ export default function DirectorConsolePage() {
         <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
           {technicianOverview.map((technician) => (
             <TechOverviewCard
+              activeIssueCount={technician.activeIssues.length}
               currentIssue={technician.currentIssue}
               hasAttention={technician.hasAttention}
               key={technician.id}
               loadCount={technician.activeIssues.length}
               now={timerNow}
+              onRequestRemove={() =>
+                setTechnicianRemovalTarget({
+                  activeIssueCount: technician.activeIssues.length,
+                  id: technician.id,
+                  name: technician.label,
+                })
+              }
               queueCount={technician.queueCount}
               resolvedCount={technician.resolvedCount}
               technicianId={technician.id}
@@ -1710,6 +1797,40 @@ export default function DirectorConsolePage() {
           >
             View Tech Location Map
           </button>
+        ) : null}
+        {technicianRemovalTarget ? (
+          <div className="mt-3 rounded-lg border border-[#ef4444]/35 bg-[#2a0b13]/85 p-3">
+            <p className="text-sm font-semibold text-white">
+              Remove {technicianRemovalTarget.name} from this session?
+            </p>
+            {technicianRemovalTarget.activeIssueCount > 0 ? (
+              <p className="mt-2 text-xs font-semibold text-[#fecaca]">
+                Reassign or resolve this technician&apos;s active issues before
+                removing them.
+              </p>
+            ) : null}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                className="rounded-md border border-white/15 px-3 py-2 text-xs font-semibold text-[#cbd5e1] transition hover:text-white"
+                disabled={isRemovingTechnician}
+                onClick={() => setTechnicianRemovalTarget(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-md border border-[#ef4444]/55 bg-[#7f1d1d] px-3 py-2 text-xs font-bold text-white transition hover:bg-[#991b1b] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={
+                  isRemovingTechnician ||
+                  technicianRemovalTarget.activeIssueCount > 0
+                }
+                onClick={() => void confirmRemoveTechnician()}
+                type="button"
+              >
+                Remove Technician
+              </button>
+            </div>
+          </div>
         ) : null}
       </section>
 
@@ -2451,16 +2572,19 @@ function ReportRow({ label, value }: { label: string; value: string }) {
 }
 
 function TechOverviewCard({
+  activeIssueCount,
   currentIssue,
   hasAttention,
   loadCount,
   now,
+  onRequestRemove,
   queueCount,
   resolvedCount,
   technicianId,
   technicianName,
   workingCount,
 }: {
+  activeIssueCount: number;
   currentIssue: {
     issue: IssueRecord;
     assignedAt: string | null;
@@ -2468,6 +2592,7 @@ function TechOverviewCard({
   hasAttention: boolean;
   loadCount: number;
   now: number | null;
+  onRequestRemove: () => void;
   queueCount: number;
   resolvedCount: number;
   technicianId: TemporaryTechnicianId;
@@ -2500,7 +2625,27 @@ function TechOverviewCard({
         <h2 className="text-sm font-semibold text-white">
           {technicianName}
         </h2>
-        <span className="text-xs font-bold text-[#dbe4ef]">Load {loadCount}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-[#dbe4ef]">
+            Load {loadCount}
+          </span>
+          <button
+            className="rounded border border-[#ef4444]/30 bg-[#2a0b13]/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#fecaca] transition hover:border-[#ef4444]/70 hover:text-white"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onRequestRemove();
+            }}
+            title={
+              activeIssueCount > 0
+                ? "Reassign or resolve active issues before removing"
+                : `Remove ${technicianName} from this session`
+            }
+            type="button"
+          >
+            Remove
+          </button>
+        </div>
       </div>
       <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] font-semibold text-[#dbe4ef]">
         <span>Working {workingCount}</span>
