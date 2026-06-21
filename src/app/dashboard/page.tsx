@@ -6,7 +6,7 @@ export default function DashboardPage() {
           Dashboard
         </p>
         <h1 className="mt-3 text-3xl font-semibold tracking-normal text-white sm:text-4xl">
-          Continuity Crew command overview
+          Continuity command overview
         </h1>
         <p className="mt-4 max-w-3xl text-base leading-7 text-[#b6c3d1]">
           The dashboard will summarize active continuity issues, field

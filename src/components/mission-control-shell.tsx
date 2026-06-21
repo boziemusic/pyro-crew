@@ -63,7 +63,7 @@ export function MissionControlShell({ children }: { children: ReactNode }) {
                 Pyro Crew
               </span>
               <span className="block text-xs font-medium uppercase tracking-[0.18em] text-[#94a3b8]">
-                Continuity Crew
+                Continuity
               </span>
             </span>
           </Link>

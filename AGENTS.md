@@ -8,13 +8,13 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 Pyro Crew is the platform.
 
-Continuity Crew is the first module.
+Continuity is the first module.
 
-Continuity Crew is not a generic task/checklist app. It is a continuity issue dispatch, verification, and root-cause tracking system for pyrotechnic display fields.
+Continuity is not a generic task/checklist app. It is a continuity issue dispatch, verification, and root-cause tracking system for pyrotechnic display fields.
 
 A "Position" means a physical launch position on the field, not a job role or work department.
 
-## Core Continuity Crew Workflow
+## Core Continuity Workflow
 
 1. Director creates a continuity issue from firing system status.
 2. Issue includes channel/module, cue/cues/cue range, position if known, issue type, and optional effect name.

@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Pyro Crew",
-  description: "Continuity Crew module coming online",
+  description: "Continuity module coming online",
 };
 
 export const viewport: Viewport = {

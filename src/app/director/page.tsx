@@ -133,6 +133,12 @@ type CreatedIssueFeedback = {
   issueType: IssueType;
 };
 
+type DuplicateIssue = {
+  issue: IssueRecord;
+  matchedCue: string;
+  technicianName: string | null;
+};
+
 const statusOrder = [
   "new",
   "assigned",
@@ -181,6 +187,41 @@ const overviewAttentionStatuses = new Set([
 ]);
 
 const resolvedStatuses = new Set(["verified_resolved", "closed"]);
+
+function getExactCueEntries(value: string) {
+  const normalizedValue = value.trim();
+
+  if (!normalizedValue) {
+    return [];
+  }
+
+  const entries = normalizedValue.split(/[,;]+/).flatMap((group) => {
+    const trimmedGroup = group.trim();
+
+    if (/^\d+\s*-\s*\d+$/.test(trimmedGroup)) {
+      return [trimmedGroup.replace(/\s*-\s*/g, "-")];
+    }
+
+    return trimmedGroup.split(/\s+/).filter(Boolean);
+  });
+
+  return entries.length > 1
+    ? entries
+    : [normalizedValue.replace(/\s*-\s*/g, "-")];
+}
+
+function findMatchingCueEntry(
+  submittedCueValue: string,
+  existingCueValue: string,
+) {
+  const existingEntries = new Set(getExactCueEntries(existingCueValue));
+
+  return (
+    getExactCueEntries(submittedCueValue).find((entry) =>
+      existingEntries.has(entry),
+    ) ?? null
+  );
+}
 
 function getTimestampValue(value: string | null | undefined) {
   const timestamp = value ? Date.parse(value) : Number.NaN;
@@ -291,6 +332,11 @@ export default function DirectorConsolePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdIssue, setCreatedIssue] =
     useState<CreatedIssueFeedback | null>(null);
+  const [duplicateIssue, setDuplicateIssue] =
+    useState<DuplicateIssue | null>(null);
+  const [highlightedIssueId, setHighlightedIssueId] = useState<
+    string | null
+  >(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [issues, setIssues] = useState<IssueRecord[]>([]);
   const [isLoadingIssues, setIsLoadingIssues] = useState(true);
@@ -349,6 +395,7 @@ export default function DirectorConsolePage() {
     } | null>(null);
   const [isRemovingTechnician, setIsRemovingTechnician] = useState(false);
   const joinedTechnicianSoundSnapshot = useRef<Set<string> | null>(null);
+  const highlightTimeoutRef = useRef<number | null>(null);
   const positionGroupNames = useMemo(
     () =>
       new Map(
@@ -438,6 +485,15 @@ export default function DirectorConsolePage() {
 
     return () => window.clearInterval(intervalId);
   }, []);
+
+  useEffect(
+    () => () => {
+      if (highlightTimeoutRef.current !== null) {
+        window.clearTimeout(highlightTimeoutRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!sessionForActiveShow) {
@@ -1605,6 +1661,66 @@ export default function DirectorConsolePage() {
 
     setIsSubmitting(true);
 
+    if (sessionForActiveShow) {
+      const { data: possibleDuplicates, error: duplicateCheckError } =
+        await supabase
+          .from("issues")
+          .select(
+            "id, channel_number, cue_value, issue_type, status, position_name, effect_name, session_id, created_at, updated_at",
+          )
+          .eq("show_id", activeShow.id)
+          .eq("session_id", sessionForActiveShow.id)
+          .eq("channel_number", Number(channelNumber))
+          .order("created_at", { ascending: false });
+
+      if (duplicateCheckError) {
+        setErrorMessage(
+          `Could not check for duplicate issues: ${duplicateCheckError.message}`,
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      const duplicateMatch = (
+        (possibleDuplicates ?? []) as IssueRecord[]
+      ).find((issue) =>
+        findMatchingCueEntry(cueValue, issue.cue_value),
+      );
+
+      if (duplicateMatch) {
+        const { data: assignmentData, error: assignmentError } =
+          await supabase
+            .from("issue_assignments")
+            .select("technician_name")
+            .eq("issue_id", duplicateMatch.id)
+            .eq("status", "active")
+            .maybeSingle();
+
+        if (assignmentError) {
+          setErrorMessage(
+            `The duplicate issue was found, but its assignment could not be loaded: ${assignmentError.message}`,
+          );
+          setIsSubmitting(false);
+          return;
+        }
+
+        setDuplicateIssue({
+          issue: duplicateMatch,
+          matchedCue:
+            findMatchingCueEntry(cueValue, duplicateMatch.cue_value) ??
+            cueValue.trim(),
+          technicianName:
+            (assignmentData as { technician_name?: string } | null)
+              ?.technician_name ??
+            latestHistoricalTechnicianByIssue.get(duplicateMatch.id) ??
+            null,
+        });
+        setIsSubmitting(false);
+        playWarning();
+        return;
+      }
+    }
+
     let scriptRowForSubmission = resolvedScriptRow;
 
     if (hasParsedScript && !cueIsRange) {
@@ -1678,6 +1794,44 @@ export default function DirectorConsolePage() {
     }
 
     setIsSubmitting(false);
+  };
+
+  const openDuplicateIssue = () => {
+    if (!duplicateIssue) {
+      return;
+    }
+
+    const issueId = duplicateIssue.issue.id;
+    const status = duplicateIssue.issue.status;
+
+    setDuplicateIssue(null);
+    setExpandedStatuses((current) => new Set(current).add(status));
+    setHighlightedIssueId(issueId);
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const issueElement = document.getElementById(
+          `director-issue-${issueId}`,
+        );
+
+        issueElement?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+        issueElement?.focus({ preventScroll: true });
+      });
+    });
+
+    if (highlightTimeoutRef.current !== null) {
+      window.clearTimeout(highlightTimeoutRef.current);
+    }
+
+    highlightTimeoutRef.current = window.setTimeout(() => {
+      setHighlightedIssueId((current) =>
+        current === issueId ? null : current,
+      );
+      highlightTimeoutRef.current = null;
+    }, 3000);
   };
 
   return (
@@ -1763,7 +1917,7 @@ export default function DirectorConsolePage() {
             </div>
           </div>
         ) : null}
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           {technicianOverview.map((technician) => (
             <TechOverviewCard
               activeIssueCount={technician.activeIssues.length}
@@ -2127,8 +2281,14 @@ export default function DirectorConsolePage() {
                         <div className="mt-1 grid gap-1 border-l border-white/10 pl-2">
                           {statusIssues.map((issue) => (
                             <div
-                              className="rounded-md border border-white/10 bg-[#070b18] px-3 py-2 text-xs text-[#dbe4ef] transition-colors hover:border-[#8b5cf6]/60"
+                              className={`rounded-md border bg-[#070b18] px-3 py-2 text-xs text-[#dbe4ef] transition-all duration-300 hover:border-[#8b5cf6]/60 focus:outline-none ${
+                                highlightedIssueId === issue.id
+                                  ? "border-[#f59e0b] ring-2 ring-[#f59e0b]/70 shadow-[0_0_24px_rgba(245,158,11,0.35)]"
+                                  : "border-white/10"
+                              }`}
+                              id={`director-issue-${issue.id}`}
                               key={issue.id}
+                              tabIndex={-1}
                             >
                               <span className="flex items-start justify-between gap-3">
                                 <Link
@@ -2280,6 +2440,67 @@ export default function DirectorConsolePage() {
           onClose={() => setIsTechLocationMapOpen(false)}
           showId={activeShow.id}
         />
+      ) : null}
+      {duplicateIssue ? (
+        <div
+          aria-labelledby="duplicate-issue-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-5"
+          role="dialog"
+        >
+          <div className="w-full max-w-md rounded-lg border border-[#f59e0b]/45 bg-[#0b1020] p-6 shadow-2xl shadow-black/50">
+            <h2
+              className="text-xl font-semibold text-white"
+              id="duplicate-issue-title"
+            >
+              Issue Already Exists
+            </h2>
+            <p className="mt-4 text-base font-semibold text-[#fde68a]">
+              CH {duplicateIssue.issue.channel_number} | Cue{" "}
+              {duplicateIssue.matchedCue}
+            </p>
+            <dl className="mt-4 divide-y divide-white/10 text-sm">
+              <div className="grid grid-cols-[7.5rem_1fr] gap-3 py-2">
+                <dt className="text-[#94a3b8]">Position:</dt>
+                <dd className="font-semibold text-white">
+                  {duplicateIssue.issue.position_name ?? "—"}
+                </dd>
+              </div>
+              <div className="grid grid-cols-[7.5rem_1fr] gap-3 py-2">
+                <dt className="text-[#94a3b8]">Current Status:</dt>
+                <dd className="font-semibold text-white">
+                  {formatIssueLabel(duplicateIssue.issue.status)}
+                </dd>
+              </div>
+              <div className="grid grid-cols-[7.5rem_1fr] gap-3 py-2">
+                <dt className="text-[#94a3b8]">Assigned To:</dt>
+                <dd className="font-semibold text-white">
+                  {duplicateIssue.technicianName
+                    ? getTemporaryTechnicianLabel(
+                        duplicateIssue.technicianName,
+                      )
+                    : "Not yet assigned to field tech."}
+                </dd>
+              </div>
+            </dl>
+            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button
+                className="rounded-md border border-white/15 px-4 py-2 text-sm font-semibold text-[#cbd5e1]"
+                onClick={() => setDuplicateIssue(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-md bg-[#6d28d9] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#7c3aed]"
+                onClick={openDuplicateIssue}
+                type="button"
+              >
+                Open Existing Issue
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
       {endSessionStep === "confirm" && sessionForActiveShow ? (
         <div
