@@ -49,6 +49,7 @@ import {
   getHistoryWriteFailureMessage,
 } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
+import { REOPEN_ISSUE_HISTORY_NOTE } from "@/lib/reopen-issue";
 import { TechnicianMapAssist } from "@/components/technician-map-assist";
 import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
 import { useIsMobileDevice } from "@/components/mobile-device";
@@ -149,6 +150,7 @@ type ScoreboardIssue = {
 type ScoreboardHistory = {
   issue_id: string;
   new_status: string;
+  note: string | null;
   created_at: string | null;
 };
 
@@ -263,6 +265,7 @@ const directorReturnNoticeTypes = new Set([
   "additional_tech_approved",
   "additional_tech_declined",
   "unfixable",
+  "reopened",
   "reassigned",
   "handoff",
   // Legacy notice types remain readable for older unread records.
@@ -288,6 +291,7 @@ const technicianNoticeSoundTypes = new Set([
   "verification_failed",
   "retrieving_parts",
   "unfixable",
+  "reopened",
   "reassigned",
   "handoff",
   "handoff_incoming",
@@ -355,11 +359,19 @@ function calculateScoreboardEntry({
   for (const issueId of issueIds) {
     const issue = issuesById.get(issueId);
     const histories = historiesByIssue.get(issueId) ?? [];
-    const terminalHistory = histories.find((history) =>
-      ["verified_resolved", "closed", "unfixable"].includes(
-        history.new_status,
-      ),
-    );
+    let lastReopenedIndex = -1;
+    histories.forEach((history, index) => {
+      if (history.note?.trim() === REOPEN_ISSUE_HISTORY_NOTE) {
+        lastReopenedIndex = index;
+      }
+    });
+    const terminalHistory = histories
+      .slice(lastReopenedIndex + 1)
+      .find((history) =>
+        ["verified_resolved", "closed", "unfixable"].includes(
+          history.new_status,
+        ),
+      );
     const resolved =
       issue &&
       ["verified_resolved", "closed", "unfixable"].includes(issue.status);
@@ -384,6 +396,7 @@ function calculateScoreboardEntry({
     const completedAt = getTimestampValue(terminalHistory?.created_at);
 
     if (
+      resolved &&
       Number.isFinite(earliestAssignedAt) &&
       earliestAssignedAt > 0 &&
       completedAt >= earliestAssignedAt
@@ -559,6 +572,14 @@ function getDirectorReturnPopupContent(
       headline: "The Director wants you to Retrieve Parts!",
       note,
       subtext: null,
+    };
+  }
+
+  if (popup.noticeType === "reopened") {
+    return {
+      headline: "Issue Reopened",
+      note: null,
+      subtext: "The Director reopened this issue for another look.",
     };
   }
 
@@ -806,7 +827,7 @@ export default function TechnicianConsolePage() {
         issueIds.length > 0
           ? supabase
               .from("issue_status_history")
-              .select("issue_id, new_status, created_at")
+              .select("issue_id, new_status, note, created_at")
               .in("issue_id", issueIds)
               .order("created_at", { ascending: true })
           : Promise.resolve({ data: [], error: null }),

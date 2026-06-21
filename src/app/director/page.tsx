@@ -14,6 +14,7 @@ import { useActiveShow } from "@/components/active-show-strip";
 import {
   formatIssueLabel,
   getIssueStatusClassName,
+  ISSUE_IDENTIFIER_VALUE_CLASS_NAME,
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import { JoinCodeQr } from "@/components/join-code-qr";
@@ -56,6 +57,11 @@ import {
   findScriptEvent,
   type ScriptEventRow,
 } from "@/lib/script-events";
+import {
+  REOPENABLE_ISSUE_STATUSES,
+  REOPEN_ISSUE_HISTORY_NOTE,
+  reopenIssue,
+} from "@/lib/reopen-issue";
 import {
   playSuccess,
   playDirectorTechJoined,
@@ -116,6 +122,7 @@ type IssueAssignmentHistory = {
 type SessionSummaryHistory = {
   issue_id: string;
   new_status: string;
+  note: string | null;
   created_at: string | null;
 };
 
@@ -320,6 +327,7 @@ export default function DirectorConsolePage() {
   const {
     assignmentsByIssue: additionalAssignments,
     assignmentTimesByIssue: additionalAssignmentTimes,
+    refresh: refreshAdditionalAssignments,
   } = useActiveAdditionalTechnicianAssignments(
     activeShow?.id,
     sessionForActiveShow?.id,
@@ -354,6 +362,10 @@ export default function DirectorConsolePage() {
   const [highlightedIssueId, setHighlightedIssueId] = useState<
     string | null
   >(null);
+  const [reopenTarget, setReopenTarget] = useState<IssueRecord | null>(
+    null,
+  );
+  const [isReopening, setIsReopening] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [issues, setIssues] = useState<IssueRecord[]>([]);
   const [isLoadingIssues, setIsLoadingIssues] = useState(true);
@@ -1462,7 +1474,7 @@ export default function DirectorConsolePage() {
     if (issueIds.length > 0) {
       const { data: historyData, error: historyError } = await supabase
         .from("issue_status_history")
-        .select("issue_id, new_status, created_at")
+        .select("issue_id, new_status, note, created_at")
         .in("issue_id", issueIds)
         .order("created_at", { ascending: true });
 
@@ -1548,6 +1560,10 @@ export default function DirectorConsolePage() {
           additionalAssignments[issue.id] === technician.id,
       );
       const completionDurations = assignedIssues.flatMap((issue) => {
+        if (!terminalStatuses.has(issue.status)) {
+          return [];
+        }
+
         const isPrimary =
           technicianAssignments[issue.id] === technician.id;
         const assignedAt = getTimestampValue(
@@ -1555,13 +1571,22 @@ export default function DirectorConsolePage() {
             ? technicianAssignmentTimes[issue.id]
             : additionalAssignmentTimes[issue.id],
         );
+        const issueHistory = historyByIssue.get(issue.id) ?? [];
+        let lastReopenedIndex = -1;
+        issueHistory.forEach((history, index) => {
+          if (history.note?.trim() === REOPEN_ISSUE_HISTORY_NOTE) {
+            lastReopenedIndex = index;
+          }
+        });
         const completedAt = getTimestampValue(
-          (historyByIssue.get(issue.id) ?? []).find(
-            (history) =>
-              terminalStatuses.has(history.new_status) &&
-              history.created_at &&
-              getTimestampValue(history.created_at) >= assignedAt,
-          )?.created_at,
+          issueHistory
+            .slice(lastReopenedIndex + 1)
+            .find(
+              (history) =>
+                terminalStatuses.has(history.new_status) &&
+                history.created_at &&
+                getTimestampValue(history.created_at) >= assignedAt,
+            )?.created_at,
         );
 
         return assignedAt > 0 && completedAt >= assignedAt
@@ -1851,6 +1876,78 @@ export default function DirectorConsolePage() {
       );
       highlightTimeoutRef.current = null;
     }, 3000);
+  };
+
+  const confirmReopenIssue = async () => {
+    if (!reopenTarget || !activeShow) {
+      return;
+    }
+
+    setIsReopening(true);
+    setAssignmentFeedback(null);
+    setAssignmentWarning(null);
+
+    const result = await reopenIssue({
+      issue: {
+        ...reopenTarget,
+        show_id: activeShow.id,
+      },
+      supabase,
+    });
+
+    if (result.error || !result.newStatus) {
+      setAssignmentFeedback({
+        type: "error",
+        message: `Could not reopen issue: ${result.error?.message ?? "Unknown error."}`,
+      });
+      setIsReopening(false);
+      return;
+    }
+
+    const issueId = reopenTarget.id;
+    setReopenTarget(null);
+    setExpandedStatuses((current) =>
+      new Set(current).add(result.newStatus!),
+    );
+    setHighlightedIssueId(issueId);
+    setAssignmentFeedback({
+      type: "success",
+      message: result.technicianName
+        ? `${getTemporaryTechnicianLabel(result.technicianName)} retained. Issue returned to In Queue.`
+        : "Issue reopened as New / Unassigned.",
+    });
+    setAssignmentWarning(
+      result.historyError
+        ? getHistoryWriteFailureMessage(result.historyError.message)
+        : result.noticeError
+          ? `Issue reopened, but technician notification failed: ${result.noticeError.message}`
+          : null,
+    );
+
+    await Promise.all([
+      refreshIssues(),
+      refreshAssignments(),
+      refreshAdditionalAssignments(),
+      refreshIssueAssignmentHistory(),
+    ]);
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById(`director-issue-${issueId}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+
+    if (highlightTimeoutRef.current !== null) {
+      window.clearTimeout(highlightTimeoutRef.current);
+    }
+    highlightTimeoutRef.current = window.setTimeout(() => {
+      setHighlightedIssueId(null);
+      highlightTimeoutRef.current = null;
+    }, 3000);
+    setIsReopening(false);
+    playSuccess();
   };
 
   return (
@@ -2463,6 +2560,17 @@ export default function DirectorConsolePage() {
                                   Note: {latestIssueNotes[issue.id]}
                                 </span>
                               ) : null}
+                              {REOPENABLE_ISSUE_STATUSES.has(
+                                issue.status,
+                              ) ? (
+                                <button
+                                  className="mt-2 rounded-md border border-[#f59e0b]/45 bg-[#2a1c06] px-3 py-2 text-xs font-bold text-[#fde68a] transition hover:border-[#fbbf24] hover:text-white"
+                                  onClick={() => setReopenTarget(issue)}
+                                  type="button"
+                                >
+                                  Reopen Issue
+                                </button>
+                              ) : null}
                             </div>
                           ))}
                         </div>
@@ -2570,6 +2678,57 @@ export default function DirectorConsolePage() {
               </button>
             </div>
           </div>
+        </div>
+      ) : null}
+      {reopenTarget ? (
+        <div
+          aria-labelledby="director-reopen-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-5"
+          role="dialog"
+        >
+          <section className="w-full max-w-md rounded-lg border border-[#f59e0b]/45 bg-[#0b1020] p-6 shadow-2xl shadow-black/60">
+            <h2
+              className="text-xl font-semibold text-white"
+              id="director-reopen-title"
+            >
+              Reopen Issue?
+            </h2>
+            <p className="mt-4 text-sm leading-6 text-[#dbe4ef]">
+              Reopen <strong className="font-bold text-white">CH</strong>{" "}
+              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+                {reopenTarget.channel_number}
+              </strong>{" "}
+              <span className="text-[#94a3b8]">|</span>{" "}
+              <strong className="font-bold text-white">Cue(s)</strong>{" "}
+              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+                {reopenTarget.cue_value}
+              </strong>{" "}
+              at{" "}
+              <strong className="font-bold text-[#4ade80]">
+                {reopenTarget.position_name ?? "—"}
+              </strong>
+              {"? This will return the issue to active work."}
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                className="rounded-md border border-white/15 px-4 py-2 text-sm font-semibold text-[#cbd5e1]"
+                disabled={isReopening}
+                onClick={() => setReopenTarget(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-md bg-[#b45309] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                disabled={isReopening}
+                onClick={() => void confirmReopenIssue()}
+                type="button"
+              >
+                {isReopening ? "Reopening..." : "Reopen Issue"}
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
       {endSessionStep === "confirm" && sessionForActiveShow ? (
