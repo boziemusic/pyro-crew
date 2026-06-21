@@ -66,6 +66,21 @@ import {
 const fieldClassName =
   "rounded-lg border border-[#334155] bg-[#020617] px-3 py-3 text-base font-semibold text-white placeholder:text-[#94a3b8] focus:border-[#8b5cf6] focus:outline-none focus:ring-2 focus:ring-[#4c00a4]/60";
 
+const cannedDirectorNotes = [
+  {
+    label: "Poor Signal",
+    note: "Module signal is poor, check/tighten antenna. Elevate antenna/mod if possible.",
+  },
+  {
+    label: "Swapped Channels",
+    note: "Banks/cables/slats may be swapped.",
+  },
+  {
+    label: "Low Battery",
+    note: "Battery low, may need to swap.",
+  },
+];
+
 type IssueType =
   | "no_continuity"
   | "unexpected_continuity"
@@ -79,6 +94,7 @@ type IssueRecord = {
   status: string;
   position_name: string | null;
   effect_name: string | null;
+  director_note: string | null;
   session_id: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -323,6 +339,7 @@ export default function DirectorConsolePage() {
   const [positionName, setPositionName] = useState("");
   const [selectedPositionId, setSelectedPositionId] = useState("");
   const [issueType, setIssueType] = useState<IssueType | "">("");
+  const [directorNote, setDirectorNote] = useState("");
   const [hasScriptEvents, setHasScriptEvents] = useState(false);
   const [resolvedScriptRow, setResolvedScriptRow] =
     useState<ScriptEventRow | null>(null);
@@ -525,7 +542,7 @@ export default function DirectorConsolePage() {
     return supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, status, position_name, effect_name, session_id, created_at, updated_at",
+        "id, channel_number, cue_value, issue_type, status, position_name, effect_name, director_note, session_id, created_at, updated_at",
       )
       .eq("show_id", activeShow.id)
       .order("created_at", { ascending: false });
@@ -1426,7 +1443,7 @@ export default function DirectorConsolePage() {
     const { data: sessionIssuesData, error: issuesError } = await supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, status, position_name, created_at, updated_at",
+        "id, channel_number, cue_value, issue_type, status, position_name, director_note, created_at, updated_at",
       )
       .eq("session_id", sessionForActiveShow.id);
 
@@ -1666,7 +1683,7 @@ export default function DirectorConsolePage() {
         await supabase
           .from("issues")
           .select(
-            "id, channel_number, cue_value, issue_type, status, position_name, effect_name, session_id, created_at, updated_at",
+            "id, channel_number, cue_value, issue_type, status, position_name, effect_name, director_note, session_id, created_at, updated_at",
           )
           .eq("show_id", activeShow.id)
           .eq("session_id", sessionForActiveShow.id)
@@ -1764,6 +1781,7 @@ export default function DirectorConsolePage() {
       channel_number: Number(channelNumber),
       created_by_user_id: null,
       cue_value: cueValue.trim(),
+      director_note: directorNote.trim() || null,
       effect_name: submittedEffectName,
       issue_source: "manual_director_entry",
       issue_type: issueType,
@@ -1790,6 +1808,7 @@ export default function DirectorConsolePage() {
       setPositionName("");
       setSelectedPositionId("");
       setIssueType("");
+      setDirectorNote("");
       await refreshIssues();
     }
 
@@ -2112,6 +2131,37 @@ export default function DirectorConsolePage() {
                 </label>
               </div>
 
+              <div className="grid gap-3">
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-semibold text-[#dbe4ef]">
+                    Director Note{" "}
+                    <span className="font-normal text-[#94a3b8]">
+                      (optional)
+                    </span>
+                  </span>
+                  <textarea
+                    className={`${fieldClassName} min-h-24 resize-y font-normal leading-6`}
+                    onChange={(event) =>
+                      setDirectorNote(event.target.value)
+                    }
+                    placeholder="Optional note to the field tech"
+                    value={directorNote}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {cannedDirectorNotes.map((cannedNote) => (
+                    <button
+                      className="rounded-md border border-[#8b5cf6]/35 bg-[#1b1235] px-3 py-2 text-left text-xs font-semibold leading-5 text-[#d8c8ff] transition hover:border-[#a78bfa] hover:text-white"
+                      key={cannedNote.label}
+                      onClick={() => setDirectorNote(cannedNote.note)}
+                      type="button"
+                    >
+                      {cannedNote.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {hasParsedScript && channelNumber && cueValue.trim() ? (
                 cueIsRange ? (
                   <p className="rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-sm font-semibold text-[#fde68a]">
@@ -2235,6 +2285,16 @@ export default function DirectorConsolePage() {
                     <p className="mt-1 text-xs text-[#94a3b8]">
                       Effect: {latestIssue.effect_name}
                     </p>
+                  ) : null}
+                  {latestIssue.director_note ? (
+                    <div className="mt-3 rounded-md border border-[#8b5cf6]/30 bg-[#130a2b]/70 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#c4b5fd]">
+                        Director Note
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-[#e9e3ff]">
+                        {latestIssue.director_note}
+                      </p>
+                    </div>
                   ) : null}
                 </Link>
               )}
@@ -2379,6 +2439,16 @@ export default function DirectorConsolePage() {
                               {issue.position_name ? (
                                 <span className="mt-1 block text-[#94a3b8]">
                                   Position: {issue.position_name}
+                                </span>
+                              ) : null}
+                              {issue.director_note ? (
+                                <span className="mt-2 block rounded-md border border-[#8b5cf6]/25 bg-[#130a2b]/60 px-2.5 py-2">
+                                  <span className="block text-[10px] font-bold uppercase tracking-[0.1em] text-[#c4b5fd]">
+                                    Director Note
+                                  </span>
+                                  <span className="mt-1 block leading-5 text-[#e9e3ff]">
+                                    {issue.director_note}
+                                  </span>
                                 </span>
                               ) : null}
                               {status === "new" ? (

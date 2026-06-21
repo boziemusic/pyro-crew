@@ -74,6 +74,7 @@ type TechnicianIssue = {
   issue_type: string;
   position_name: string | null;
   effect_name: string | null;
+  director_note: string | null;
   status: string;
   session_id: string | null;
   created_at: string | null;
@@ -1041,7 +1042,7 @@ export default function TechnicianConsolePage() {
     const { data, error } = await supabase
       .from("issues")
       .select(
-        "id, channel_number, cue_value, issue_type, position_name, effect_name, status, session_id, created_at, updated_at",
+        "id, channel_number, cue_value, issue_type, position_name, effect_name, director_note, status, session_id, created_at, updated_at",
       )
       .eq("show_id", activeShow.id)
       .eq("session_id", activeSession.id)
@@ -2086,6 +2087,16 @@ export default function TechnicianConsolePage() {
                 Effect: {issue.effect_name}
               </p>
             ) : null}
+            {issue.director_note ? (
+              <div className="rounded-lg border border-[#8b5cf6]/40 bg-[#130a2b]/85 px-3 py-3 shadow-[inset_3px_0_0_#8b5cf6]">
+                <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#c4b5fd]">
+                  Director Note
+                </p>
+                <p className="mt-1.5 whitespace-pre-wrap text-sm font-medium leading-6 text-[#f1edff]">
+                  {issue.director_note}
+                </p>
+              </div>
+            ) : null}
             {notFixedNote ? (
               <div className="rounded-md border border-[#ef4444]/45 bg-[#2a0b13] px-3 py-2">
                 <p className="text-sm font-bold text-[#fecaca]">
@@ -2256,6 +2267,16 @@ export default function TechnicianConsolePage() {
           >
             {formatIssueLabel(issue.status)}
           </span>
+          {issue.director_note ? (
+            <div className="mt-3 rounded-lg border border-[#8b5cf6]/40 bg-[#130a2b]/85 px-3 py-3 shadow-[inset_3px_0_0_#8b5cf6]">
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#c4b5fd]">
+                Director Note
+              </p>
+              <p className="mt-1.5 whitespace-pre-wrap text-sm font-medium leading-6 text-[#f1edff]">
+                {issue.director_note}
+              </p>
+            </div>
+          ) : null}
           {latestIssueNotes[issue.id] ? (
             <p className="mt-3 text-sm italic leading-6 text-[#cbd5e1]">
               Note: {latestIssueNotes[issue.id]}
