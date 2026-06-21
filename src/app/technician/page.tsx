@@ -54,6 +54,11 @@ import { TechnicianMapAssist } from "@/components/technician-map-assist";
 import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
 import { useIsMobileDevice } from "@/components/mobile-device";
 import {
+  IssueChatButton,
+  IssueChatWindow,
+  useIssueChat,
+} from "@/components/issue-chat";
+import {
   playSuccess,
   playTechAdditionalHelperAssigned,
   playTechAdditionalRequestAccepted,
@@ -687,6 +692,25 @@ export default function TechnicianConsolePage() {
     selectedTechnician,
   );
   const [issues, setIssues] = useState<TechnicianIssue[]>([]);
+  const technicianChatIssueIds = useMemo(
+    () => issues.map((issue) => issue.id),
+    [issues],
+  );
+  const technicianIssueChat = useIssueChat({
+    issueIds: technicianChatIssueIds,
+    readerRole: "technician",
+    readerTechnicianName: selectedTechnician,
+    sessionId:
+      activeSession && activeSession.show_id === activeShow?.id
+        ? activeSession.id
+        : null,
+    showId: activeShow?.id,
+  });
+  const technicianChatTarget = technicianIssueChat.openIssueId
+    ? issues.find(
+        (issue) => issue.id === technicianIssueChat.openIssueId,
+      ) ?? null
+    : null;
   const [activeAssignments, setActiveAssignments] = useState<
     IssueAssignment[]
   >([]);
@@ -2134,6 +2158,12 @@ export default function TechnicianConsolePage() {
             ) : null}
           </div>
           <div className="flex items-center gap-3">
+            <IssueChatButton
+              onClick={() => technicianIssueChat.openChat(issue.id)}
+              unreadCount={
+                technicianIssueChat.unreadByIssue[issue.id] ?? 0
+              }
+            />
             <span
               className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] ${getIssueStatusClassName(issue.status)}`}
             >
@@ -2308,36 +2338,44 @@ export default function TechnicianConsolePage() {
             </p>
           ) : null}
         </div>
-        <button
-          className="min-h-12 touch-manipulation rounded-md border border-[#8b5cf6]/45 bg-[#1b1235] px-4 py-3 text-sm font-semibold text-[#d8c8ff] transition active:border-[#a78bfa] md:min-h-0 md:px-3 md:py-2 md:text-xs md:hover:border-[#a78bfa]"
-          onClick={() => {
-            const matchingNotices = notices.filter(
-              (notice) =>
-                resolutionNoticeTypes.has(notice.notice_type) &&
-                notice.issue_id === issue.id,
-            );
-            void Promise.all(
-              matchingNotices.map((notice) =>
-                acknowledgeTechnicianNotice(notice.id),
-              ),
-            ).then(async (results) => {
-              const noticeError = results.find(
-                (result) => result.error,
-              )?.error;
-              if (noticeError) {
-                setFeedback({
-                  type: "error",
-                  message: `Could not acknowledge resolution: ${noticeError.message}`,
-                });
-                return;
-              }
-              await refreshNotices();
-            });
-          }}
-          type="button"
-        >
-          Acknowledge & Remove
-        </button>
+        <div className="flex items-center gap-2">
+          <IssueChatButton
+            onClick={() => technicianIssueChat.openChat(issue.id)}
+            unreadCount={
+              technicianIssueChat.unreadByIssue[issue.id] ?? 0
+            }
+          />
+          <button
+            className="min-h-12 touch-manipulation rounded-md border border-[#8b5cf6]/45 bg-[#1b1235] px-4 py-3 text-sm font-semibold text-[#d8c8ff] transition active:border-[#a78bfa] md:min-h-0 md:px-3 md:py-2 md:text-xs md:hover:border-[#a78bfa]"
+            onClick={() => {
+              const matchingNotices = notices.filter(
+                (notice) =>
+                  resolutionNoticeTypes.has(notice.notice_type) &&
+                  notice.issue_id === issue.id,
+              );
+              void Promise.all(
+                matchingNotices.map((notice) =>
+                  acknowledgeTechnicianNotice(notice.id),
+                ),
+              ).then(async (results) => {
+                const noticeError = results.find(
+                  (result) => result.error,
+                )?.error;
+                if (noticeError) {
+                  setFeedback({
+                    type: "error",
+                    message: `Could not acknowledge resolution: ${noticeError.message}`,
+                  });
+                  return;
+                }
+                await refreshNotices();
+              });
+            }}
+            type="button"
+          >
+            Acknowledge & Remove
+          </button>
+        </div>
       </div>
     </article>
   );
@@ -3105,6 +3143,32 @@ export default function TechnicianConsolePage() {
             </div>
           </section>
         </div>
+      ) : null}
+      {technicianChatTarget ? (
+        <IssueChatWindow
+          error={technicianIssueChat.error}
+          isSending={technicianIssueChat.isSending}
+          messages={
+            technicianIssueChat.messagesByIssue[
+              technicianChatTarget.id
+            ] ?? []
+          }
+          onClose={technicianIssueChat.closeChat}
+          onSend={(body) =>
+            technicianIssueChat.sendMessage(
+              technicianChatTarget.id,
+              body,
+            )
+          }
+          readerRole="technician"
+          readerTechnicianName={selectedTechnician}
+          target={{
+            channelNumber: technicianChatTarget.channel_number,
+            cueValue: technicianChatTarget.cue_value,
+            id: technicianChatTarget.id,
+            positionName: technicianChatTarget.position_name,
+          }}
+        />
       ) : null}
 
       {sessionEndedPopup ? (

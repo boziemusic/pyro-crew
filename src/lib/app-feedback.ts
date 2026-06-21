@@ -413,6 +413,18 @@ export function playUiClick() {
   void playSound("UI Click", soundPaths.uiClick, 520, 55);
 }
 
+export function playChatMessage() {
+  if (!getAppFeedbackSettings().soundsEnabled) {
+    return;
+  }
+
+  void unlockAppFeedback().then((unlocked) => {
+    if (unlocked) {
+      void playGeneratedTone(620, 85, 0.025);
+    }
+  });
+}
+
 export function playSuccess() {
   void playSound("Success", soundPaths.success, 720, 120);
 }

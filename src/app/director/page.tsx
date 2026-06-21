@@ -23,6 +23,12 @@ import {
   DirectorTechLocationMap,
   type TechnicianMapLocation,
 } from "@/components/director-tech-location-map";
+import {
+  IssueChatButton,
+  IssueChatWindow,
+  purgeIssueChatSession,
+  useIssueChat,
+} from "@/components/issue-chat";
 import { useFieldMap } from "@/components/field-map-store";
 import { useShowPositions } from "@/components/position-store";
 import {
@@ -160,6 +166,16 @@ type DuplicateIssue = {
   issue: IssueRecord;
   matchedCue: string;
   technicianName: string | null;
+};
+
+type TechnicianContextMenuState = {
+  activeIssueCount: number;
+  currentIssue: IssueRecord | null;
+  technicianId: TemporaryTechnicianId;
+  technicianName: string;
+  unreadCount: number;
+  x: number;
+  y: number;
 };
 
 const statusOrder = [
@@ -382,6 +398,27 @@ export default function DirectorConsolePage() {
   const [issueAssignmentHistory, setIssueAssignmentHistory] = useState<
     IssueAssignmentHistory[]
   >([]);
+  const directorChatIssueIds = useMemo(
+    () =>
+      issues
+        .filter(
+          (issue) => issue.session_id === sessionForActiveShow?.id,
+        )
+        .map((issue) => issue.id),
+    [issues, sessionForActiveShow?.id],
+  );
+  const directorIssueChat = useIssueChat({
+    issueIds: directorChatIssueIds,
+    readerRole: "director",
+    readerTechnicianName: null,
+    sessionId: sessionForActiveShow?.id,
+    showId: activeShow?.id,
+  });
+  const directorChatTarget = directorIssueChat.openIssueId
+    ? issues.find(
+        (issue) => issue.id === directorIssueChat.openIssueId,
+      ) ?? null
+    : null;
   const [expandedStatuses, setExpandedStatuses] = useState<Set<string>>(
     new Set(),
   );
@@ -422,9 +459,12 @@ export default function DirectorConsolePage() {
       id: TemporaryTechnicianId;
       name: string;
     } | null>(null);
+  const [technicianContextMenu, setTechnicianContextMenu] =
+    useState<TechnicianContextMenuState | null>(null);
   const [isRemovingTechnician, setIsRemovingTechnician] = useState(false);
   const joinedTechnicianSoundSnapshot = useRef<Set<string> | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
+  const technicianContextMenuRef = useRef<HTMLDivElement>(null);
   const positionGroupNames = useMemo(
     () =>
       new Map(
@@ -434,6 +474,39 @@ export default function DirectorConsolePage() {
   );
   const hasParsedScript = hasScriptEvents;
   const cueIsRange = /^\s*\d+\s*-\s*\d+\s*$/.test(cueValue);
+
+  useEffect(() => {
+    if (!technicianContextMenu) {
+      return;
+    }
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !technicianContextMenuRef.current?.contains(event.target)
+      ) {
+        setTechnicianContextMenu(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setTechnicianContextMenu(null);
+      }
+    };
+    const closeMenu = () => setTechnicianContextMenu(null);
+
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [technicianContextMenu]);
 
   useEffect(() => {
     const loadScriptEventCount = async () => {
@@ -1452,6 +1525,19 @@ export default function DirectorConsolePage() {
       });
     }
 
+    const { error: chatCleanupError } = await purgeIssueChatSession(
+      supabase,
+      sessionForActiveShow.id,
+    );
+
+    if (chatCleanupError) {
+      setSessionSummaryError(
+        `Continuity session ended, but temporary issue chat could not be cleared: ${chatCleanupError.message}`,
+      );
+      setIsLoadingSessionSummary(false);
+      return;
+    }
+
     const { data: sessionIssuesData, error: issuesError } = await supabase
       .from("issues")
       .select(
@@ -1674,6 +1760,19 @@ export default function DirectorConsolePage() {
       }
     }
 
+    const { error: chatCleanupError } = await purgeIssueChatSession(
+      supabase,
+      sessionForActiveShow.id,
+    );
+
+    if (chatCleanupError) {
+      setSessionMessage(
+        `Continuity session ended, but temporary issue chat could not be cleared: ${chatCleanupError.message}`,
+      );
+      setIsEndingSession(false);
+      return;
+    }
+
     setActiveContinuitySession(null);
     setEndSessionStep(null);
     setEndSessionSummary(null);
@@ -1840,22 +1939,14 @@ export default function DirectorConsolePage() {
     setIsSubmitting(false);
   };
 
-  const openDuplicateIssue = () => {
-    if (!duplicateIssue) {
-      return;
-    }
-
-    const issueId = duplicateIssue.issue.id;
-    const status = duplicateIssue.issue.status;
-
-    setDuplicateIssue(null);
-    setExpandedStatuses((current) => new Set(current).add(status));
-    setHighlightedIssueId(issueId);
+  const focusIssueInSummary = (issue: IssueRecord) => {
+    setExpandedStatuses((current) => new Set(current).add(issue.status));
+    setHighlightedIssueId(issue.id);
 
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         const issueElement = document.getElementById(
-          `director-issue-${issueId}`,
+          `director-issue-${issue.id}`,
         );
 
         issueElement?.scrollIntoView({
@@ -1872,10 +1963,76 @@ export default function DirectorConsolePage() {
 
     highlightTimeoutRef.current = window.setTimeout(() => {
       setHighlightedIssueId((current) =>
-        current === issueId ? null : current,
+        current === issue.id ? null : current,
       );
       highlightTimeoutRef.current = null;
     }, 3000);
+  };
+
+  const openDuplicateIssue = () => {
+    if (!duplicateIssue) {
+      return;
+    }
+
+    const issue = duplicateIssue.issue;
+
+    setDuplicateIssue(null);
+    focusIssueInSummary(issue);
+  };
+
+  const openTechnicianContextMenu = (
+    technician: Omit<TechnicianContextMenuState, "x" | "y">,
+    x: number,
+    y: number,
+  ) => {
+    const menuWidth = 256;
+    const menuHeight = 210;
+    const viewportPadding = 8;
+
+    setTechnicianContextMenu({
+      ...technician,
+      x: Math.max(
+        viewportPadding,
+        Math.min(x, window.innerWidth - menuWidth - viewportPadding),
+      ),
+      y: Math.max(
+        viewportPadding,
+        Math.min(y, window.innerHeight - menuHeight - viewportPadding),
+      ),
+    });
+  };
+
+  const viewTechnicianCurrentIssue = () => {
+    if (!technicianContextMenu?.currentIssue) {
+      return;
+    }
+
+    const issue = technicianContextMenu.currentIssue;
+    setTechnicianContextMenu(null);
+    focusIssueInSummary(issue);
+  };
+
+  const openTechnicianIssueChat = () => {
+    if (!technicianContextMenu?.currentIssue) {
+      return;
+    }
+
+    const issueId = technicianContextMenu.currentIssue.id;
+    setTechnicianContextMenu(null);
+    directorIssueChat.openChat(issueId);
+  };
+
+  const requestTechnicianRemovalFromMenu = () => {
+    if (!technicianContextMenu) {
+      return;
+    }
+
+    setTechnicianRemovalTarget({
+      activeIssueCount: technicianContextMenu.activeIssueCount,
+      id: technicianContextMenu.technicianId,
+      name: technicianContextMenu.technicianName,
+    });
+    setTechnicianContextMenu(null);
   };
 
   const confirmReopenIssue = async () => {
@@ -2036,18 +2193,42 @@ export default function DirectorConsolePage() {
         <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           {technicianOverview.map((technician) => (
             <TechOverviewCard
-              activeIssueCount={technician.activeIssues.length}
+              chatUnreadCount={
+                technician.currentIssue
+                  ? (directorIssueChat.unreadByIssue[
+                      technician.currentIssue.issue.id
+                    ] ?? 0)
+                  : 0
+              }
               currentIssue={technician.currentIssue}
               hasAttention={technician.hasAttention}
               key={technician.id}
               loadCount={technician.activeIssues.length}
               now={timerNow}
-              onRequestRemove={() =>
-                setTechnicianRemovalTarget({
-                  activeIssueCount: technician.activeIssues.length,
-                  id: technician.id,
-                  name: technician.label,
-                })
+              onOpenChat={() => {
+                if (technician.currentIssue) {
+                  directorIssueChat.openChat(
+                    technician.currentIssue.issue.id,
+                  );
+                }
+              }}
+              onOpenContextMenu={(x, y) =>
+                openTechnicianContextMenu(
+                  {
+                    activeIssueCount: technician.activeIssues.length,
+                    currentIssue:
+                      technician.currentIssue?.issue ?? null,
+                    technicianId: technician.id,
+                    technicianName: technician.label,
+                    unreadCount: technician.currentIssue
+                      ? (directorIssueChat.unreadByIssue[
+                          technician.currentIssue.issue.id
+                        ] ?? 0)
+                      : 0,
+                  },
+                  x,
+                  y,
+                )
               }
               queueCount={technician.queueCount}
               resolvedCount={technician.resolvedCount}
@@ -2098,6 +2279,63 @@ export default function DirectorConsolePage() {
                 Remove Technician
               </button>
             </div>
+          </div>
+        ) : null}
+        {technicianContextMenu ? (
+          <div
+            className="fixed z-[70] w-64 overflow-hidden rounded-lg border border-white/15 bg-[#0b1020] p-1.5 shadow-2xl shadow-black/70"
+            ref={technicianContextMenuRef}
+            role="menu"
+            style={{
+              left: technicianContextMenu.x,
+              top: technicianContextMenu.y,
+            }}
+          >
+            <p className="truncate border-b border-white/10 px-3 py-2 text-xs font-semibold text-[#94a3b8]">
+              {technicianContextMenu.technicianName}
+            </p>
+            <button
+              className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm font-semibold text-[#e2e8f0] transition hover:bg-white/10 disabled:cursor-not-allowed disabled:text-[#64748b] disabled:hover:bg-transparent"
+              disabled={!technicianContextMenu.currentIssue}
+              onClick={viewTechnicianCurrentIssue}
+              role="menuitem"
+              type="button"
+            >
+              View Current Issue
+            </button>
+            <button
+              className="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm font-semibold text-[#bfdbfe] transition hover:bg-[#0b1b35] disabled:cursor-not-allowed disabled:text-[#64748b] disabled:hover:bg-transparent"
+              disabled={!technicianContextMenu.currentIssue}
+              onClick={openTechnicianIssueChat}
+              role="menuitem"
+              type="button"
+            >
+              <span>Open Issue Chat</span>
+              {technicianContextMenu.unreadCount > 0 ? (
+                <span className="flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[#ef4444] px-1 text-[10px] font-bold text-white">
+                  {technicianContextMenu.unreadCount > 99
+                    ? "99+"
+                    : technicianContextMenu.unreadCount}
+                </span>
+              ) : null}
+            </button>
+            <button
+              className="flex w-full cursor-not-allowed items-center rounded-md px-3 py-2 text-left text-sm font-semibold text-[#64748b]"
+              disabled
+              role="menuitem"
+              type="button"
+            >
+              View Tech Profile (coming soon)
+            </button>
+            <div className="my-1 border-t border-white/10" />
+            <button
+              className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm font-semibold text-[#fecaca] transition hover:bg-[#2a0b13]"
+              onClick={requestTechnicianRemovalFromMenu}
+              role="menuitem"
+              type="button"
+            >
+              Remove Technician
+            </button>
           </div>
         ) : null}
       </section>
@@ -2458,80 +2696,95 @@ export default function DirectorConsolePage() {
                                     issueType={issue.issue_type}
                                   />
                                 </Link>
-                                {status === "new" ? (
-                                  <select
-                                    aria-label={`Assign technician to channel ${issue.channel_number}, cue ${issue.cue_value}`}
-                                    className="h-8 max-w-32 shrink-0 rounded-md border border-[#8b5cf6]/40 bg-[#130a2b] px-2 text-xs font-semibold text-white outline-none focus:border-[#a78bfa]"
-                                    disabled={assigningIssueId === issue.id}
-                                    onChange={(event) => {
-                                      const technicianId = event.target
-                                        .value as TemporaryTechnicianId | "";
-
-                                      if (technicianId) {
-                                        void assignTechnician(
-                                          issue,
-                                          technicianId,
-                                        );
+                                <span className="flex shrink-0 items-center gap-2">
+                                  {issue.session_id ===
+                                  sessionForActiveShow?.id ? (
+                                    <IssueChatButton
+                                      onClick={() =>
+                                        directorIssueChat.openChat(issue.id)
                                       }
-                                    }}
-                                    value=""
-                                  >
-                                    <option value="">Assign Tech</option>
-                                    {technicianOptions.map(
-                                      (technician) => (
-                                        <option
-                                          key={technician.id}
-                                          value={technician.id}
-                                        >
-                                          {technician.label}
-                                        </option>
-                                      ),
-                                    )}
-                                  </select>
-                                ) : technicianAssignments[issue.id] &&
-                                  !terminalStatuses.has(status) ? (
-                                  <select
-                                    aria-label={`Reassign channel ${issue.channel_number}, cue ${issue.cue_value}`}
-                                    className="h-8 max-w-32 shrink-0 rounded-md border border-[#3b82f6]/40 bg-[#0b1b35] px-2 text-xs font-semibold text-white outline-none focus:border-[#60a5fa]"
-                                    disabled={
-                                      reassigningIssueId === issue.id
-                                    }
-                                    onChange={(event) => {
-                                      const technicianId = event.target
-                                        .value as TemporaryTechnicianId;
+                                      unreadCount={
+                                        directorIssueChat.unreadByIssue[
+                                          issue.id
+                                        ] ?? 0
+                                      }
+                                    />
+                                  ) : null}
+                                  {status === "new" ? (
+                                    <select
+                                      aria-label={`Assign technician to channel ${issue.channel_number}, cue ${issue.cue_value}`}
+                                      className="h-8 max-w-32 shrink-0 rounded-md border border-[#8b5cf6]/40 bg-[#130a2b] px-2 text-xs font-semibold text-white outline-none focus:border-[#a78bfa]"
+                                      disabled={assigningIssueId === issue.id}
+                                      onChange={(event) => {
+                                        const technicianId = event.target
+                                          .value as TemporaryTechnicianId | "";
 
-                                      if (
-                                        technicianId !==
+                                        if (technicianId) {
+                                          void assignTechnician(
+                                            issue,
+                                            technicianId,
+                                          );
+                                        }
+                                      }}
+                                      value=""
+                                    >
+                                      <option value="">Assign Tech</option>
+                                      {technicianOptions.map(
+                                        (technician) => (
+                                          <option
+                                            key={technician.id}
+                                            value={technician.id}
+                                          >
+                                            {technician.label}
+                                          </option>
+                                        ),
+                                      )}
+                                    </select>
+                                  ) : technicianAssignments[issue.id] &&
+                                    !terminalStatuses.has(status) ? (
+                                    <select
+                                      aria-label={`Reassign channel ${issue.channel_number}, cue ${issue.cue_value}`}
+                                      className="h-8 max-w-32 shrink-0 rounded-md border border-[#3b82f6]/40 bg-[#0b1b35] px-2 text-xs font-semibold text-white outline-none focus:border-[#60a5fa]"
+                                      disabled={
+                                        reassigningIssueId === issue.id
+                                      }
+                                      onChange={(event) => {
+                                        const technicianId = event.target
+                                          .value as TemporaryTechnicianId;
+
+                                        if (
+                                          technicianId !==
+                                          technicianAssignments[issue.id]
+                                        ) {
+                                          void reassignTechnician(
+                                            issue,
+                                            technicianId,
+                                          );
+                                        }
+                                      }}
+                                      value={
                                         technicianAssignments[issue.id]
-                                      ) {
-                                        void reassignTechnician(
-                                          issue,
-                                          technicianId,
-                                        );
                                       }
-                                    }}
-                                    value={
-                                      technicianAssignments[issue.id]
-                                    }
-                                  >
-                                    {technicianOptions.map(
-                                      (technician) => (
-                                        <option
-                                          key={technician.id}
-                                          value={technician.id}
-                                        >
-                                          {technician.label}
-                                        </option>
-                                      ),
-                                    )}
-                                  </select>
-                                ) : (
-                                  <span className="shrink-0 text-right font-semibold text-[#cbd5e1]">
-                                    {getTemporaryTechnicianLabel(
-                                      technicianAssignments[issue.id],
-                                    )}
-                                  </span>
-                                )}
+                                    >
+                                      {technicianOptions.map(
+                                        (technician) => (
+                                          <option
+                                            key={technician.id}
+                                            value={technician.id}
+                                          >
+                                            {technician.label}
+                                          </option>
+                                        ),
+                                      )}
+                                    </select>
+                                  ) : (
+                                    <span className="shrink-0 text-right font-semibold text-[#cbd5e1]">
+                                      {getTemporaryTechnicianLabel(
+                                        technicianAssignments[issue.id],
+                                      )}
+                                    </span>
+                                  )}
+                                </span>
                               </span>
                               {issue.position_name ? (
                                 <span className="mt-1 block text-[#94a3b8]">
@@ -2679,6 +2932,27 @@ export default function DirectorConsolePage() {
             </div>
           </div>
         </div>
+      ) : null}
+      {directorChatTarget ? (
+        <IssueChatWindow
+          error={directorIssueChat.error}
+          isSending={directorIssueChat.isSending}
+          messages={
+            directorIssueChat.messagesByIssue[directorChatTarget.id] ?? []
+          }
+          onClose={directorIssueChat.closeChat}
+          onSend={(body) =>
+            directorIssueChat.sendMessage(directorChatTarget.id, body)
+          }
+          readerRole="director"
+          readerTechnicianName={null}
+          target={{
+            channelNumber: directorChatTarget.channel_number,
+            cueValue: directorChatTarget.cue_value,
+            id: directorChatTarget.id,
+            positionName: directorChatTarget.position_name,
+          }}
+        />
       ) : null}
       {reopenTarget ? (
         <div
@@ -3020,19 +3294,20 @@ function ReportRow({ label, value }: { label: string; value: string }) {
 }
 
 function TechOverviewCard({
-  activeIssueCount,
+  chatUnreadCount,
   currentIssue,
   hasAttention,
   loadCount,
   now,
-  onRequestRemove,
+  onOpenChat,
+  onOpenContextMenu,
   queueCount,
   resolvedCount,
   technicianId,
   technicianName,
   workingCount,
 }: {
-  activeIssueCount: number;
+  chatUnreadCount: number;
   currentIssue: {
     issue: IssueRecord;
     assignedAt: string | null;
@@ -3040,7 +3315,8 @@ function TechOverviewCard({
   hasAttention: boolean;
   loadCount: number;
   now: number | null;
-  onRequestRemove: () => void;
+  onOpenChat: () => void;
+  onOpenContextMenu: (x: number, y: number) => void;
   queueCount: number;
   resolvedCount: number;
   technicianId: TemporaryTechnicianId;
@@ -3062,6 +3338,11 @@ function TechOverviewCard({
       className={`relative block cursor-pointer overflow-hidden rounded-lg border p-3 transition duration-150 hover:brightness-110 hover:shadow-[0_0_18px_rgba(167,139,250,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a78bfa] ${workloadClassName} ${hasAttention ? "tech-overview-attention-wiggle" : ""}`}
       href="/technician"
       onClick={() => setSelectedTemporaryTechnician(technicianId)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onOpenContextMenu(event.clientX, event.clientY);
+      }}
     >
       {hasAttention ? (
         <span
@@ -3070,28 +3351,40 @@ function TechOverviewCard({
         />
       ) : null}
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-white">
+        <h2 className="min-w-0 truncate text-sm font-semibold text-white">
           {technicianName}
         </h2>
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold text-[#dbe4ef]">
             Load {loadCount}
           </span>
+          {currentIssue ? (
+            <span
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              <IssueChatButton
+                compact
+                onClick={onOpenChat}
+                unreadCount={chatUnreadCount}
+              />
+            </span>
+          ) : null}
           <button
-            className="rounded border border-[#ef4444]/30 bg-[#2a0b13]/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#fecaca] transition hover:border-[#ef4444]/70 hover:text-white"
+            aria-label={`Open actions for ${technicianName}`}
+            className="rounded border border-white/15 bg-black/15 px-2 py-1 text-sm font-bold leading-none text-[#cbd5e1] transition hover:border-white/35 hover:text-white"
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              onRequestRemove();
+              const bounds = event.currentTarget.getBoundingClientRect();
+              onOpenContextMenu(bounds.right - 248, bounds.bottom + 6);
             }}
-            title={
-              activeIssueCount > 0
-                ? "Reassign or resolve active issues before removing"
-                : `Remove ${technicianName} from this session`
-            }
+            title={`Open actions for ${technicianName}`}
             type="button"
           >
-            Remove
+            ⋯
           </button>
         </div>
       </div>
