@@ -31,6 +31,7 @@ import {
 } from "@/components/collaboration-store";
 import { getHistoryWriteFailureMessage } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
+import { purgeIssueVoiceMemos } from "@/components/issue-voice-memos";
 import {
   playAdditionalTechRequested,
   playDirectorAttention,
@@ -529,6 +530,22 @@ export function DirectorAttentionQueue({
     if (isResolution) {
       await completeAdditionalTechnicianAssignments(issue.id);
       await refreshAdditionalAssignments();
+    }
+
+    if (
+      newStatus === "verified_resolved" ||
+      newStatus === "unfixable"
+    ) {
+      const { error: voiceMemoCleanupError } =
+        await purgeIssueVoiceMemos(supabase, {
+          issueId: issue.id,
+        });
+
+      if (voiceMemoCleanupError) {
+        setHistoryWarning(
+          `Issue updated, but temporary voice memos could not be cleared: ${voiceMemoCleanupError.message}`,
+        );
+      }
     }
 
     setActiveAction(null);

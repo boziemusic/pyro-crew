@@ -425,6 +425,18 @@ export function playChatMessage() {
   });
 }
 
+export function playVoiceMemoMessage() {
+  if (!getAppFeedbackSettings().soundsEnabled) {
+    return;
+  }
+
+  void unlockAppFeedback().then((unlocked) => {
+    if (unlocked) {
+      void playGeneratedTone(700, 105, 0.025);
+    }
+  });
+}
+
 export function playSuccess() {
   void playSound("Success", soundPaths.success, 720, 120);
 }

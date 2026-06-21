@@ -29,6 +29,12 @@ import {
   purgeIssueChatSession,
   useIssueChat,
 } from "@/components/issue-chat";
+import {
+  IssueVoiceMemoButton,
+  IssueVoiceMemoPanel,
+  purgeIssueVoiceMemos,
+  useIssueVoiceMemos,
+} from "@/components/issue-voice-memos";
 import { useFieldMap } from "@/components/field-map-store";
 import { useShowPositions } from "@/components/position-store";
 import {
@@ -417,6 +423,18 @@ export default function DirectorConsolePage() {
   const directorChatTarget = directorIssueChat.openIssueId
     ? issues.find(
         (issue) => issue.id === directorIssueChat.openIssueId,
+      ) ?? null
+    : null;
+  const directorIssueVoiceMemos = useIssueVoiceMemos({
+    issueIds: directorChatIssueIds,
+    readerRole: "director",
+    readerTechnicianName: null,
+    sessionId: sessionForActiveShow?.id,
+    showId: activeShow?.id,
+  });
+  const directorVoiceMemoTarget = directorIssueVoiceMemos.openIssueId
+    ? issues.find(
+        (issue) => issue.id === directorIssueVoiceMemos.openIssueId,
       ) ?? null
     : null;
   const [expandedStatuses, setExpandedStatuses] = useState<Set<string>>(
@@ -1538,6 +1556,19 @@ export default function DirectorConsolePage() {
       return;
     }
 
+    const { error: voiceMemoCleanupError } =
+      await purgeIssueVoiceMemos(supabase, {
+        sessionId: sessionForActiveShow.id,
+      });
+
+    if (voiceMemoCleanupError) {
+      setSessionSummaryError(
+        `Continuity session ended, but temporary voice memos could not be cleared: ${voiceMemoCleanupError.message}`,
+      );
+      setIsLoadingSessionSummary(false);
+      return;
+    }
+
     const { data: sessionIssuesData, error: issuesError } = await supabase
       .from("issues")
       .select(
@@ -1768,6 +1799,19 @@ export default function DirectorConsolePage() {
     if (chatCleanupError) {
       setSessionMessage(
         `Continuity session ended, but temporary issue chat could not be cleared: ${chatCleanupError.message}`,
+      );
+      setIsEndingSession(false);
+      return;
+    }
+
+    const { error: voiceMemoCleanupError } =
+      await purgeIssueVoiceMemos(supabase, {
+        sessionId: sessionForActiveShow.id,
+      });
+
+    if (voiceMemoCleanupError) {
+      setSessionMessage(
+        `Continuity session ended, but temporary voice memos could not be cleared: ${voiceMemoCleanupError.message}`,
       );
       setIsEndingSession(false);
       return;
@@ -2200,6 +2244,13 @@ export default function DirectorConsolePage() {
                     ] ?? 0)
                   : 0
               }
+              voiceMemoUnreadCount={
+                technician.currentIssue
+                  ? (directorIssueVoiceMemos.unreadByIssue[
+                      technician.currentIssue.issue.id
+                    ] ?? 0)
+                  : 0
+              }
               currentIssue={technician.currentIssue}
               hasAttention={technician.hasAttention}
               key={technician.id}
@@ -2208,6 +2259,13 @@ export default function DirectorConsolePage() {
               onOpenChat={() => {
                 if (technician.currentIssue) {
                   directorIssueChat.openChat(
+                    technician.currentIssue.issue.id,
+                  );
+                }
+              }}
+              onOpenVoiceMemos={() => {
+                if (technician.currentIssue) {
+                  directorIssueVoiceMemos.openPanel(
                     technician.currentIssue.issue.id,
                   );
                 }
@@ -2699,16 +2757,35 @@ export default function DirectorConsolePage() {
                                 <span className="flex shrink-0 items-center gap-2">
                                   {issue.session_id ===
                                   sessionForActiveShow?.id ? (
-                                    <IssueChatButton
-                                      onClick={() =>
-                                        directorIssueChat.openChat(issue.id)
-                                      }
-                                      unreadCount={
-                                        directorIssueChat.unreadByIssue[
-                                          issue.id
-                                        ] ?? 0
-                                      }
-                                    />
+                                    <>
+                                      <IssueChatButton
+                                        onClick={() =>
+                                          directorIssueChat.openChat(issue.id)
+                                        }
+                                        unreadCount={
+                                          directorIssueChat.unreadByIssue[
+                                            issue.id
+                                          ] ?? 0
+                                        }
+                                      />
+                                      {![
+                                        "verified_resolved",
+                                        "unfixable",
+                                        "closed",
+                                      ].includes(status) ? (
+                                        <IssueVoiceMemoButton
+                                          onClick={() =>
+                                            directorIssueVoiceMemos.openPanel(
+                                              issue.id,
+                                            )
+                                          }
+                                          unreadCount={
+                                            directorIssueVoiceMemos
+                                              .unreadByIssue[issue.id] ?? 0
+                                          }
+                                        />
+                                      ) : null}
+                                    </>
                                   ) : null}
                                   {status === "new" ? (
                                     <select
@@ -2951,6 +3028,35 @@ export default function DirectorConsolePage() {
             cueValue: directorChatTarget.cue_value,
             id: directorChatTarget.id,
             positionName: directorChatTarget.position_name,
+          }}
+        />
+      ) : null}
+      {directorVoiceMemoTarget ? (
+        <IssueVoiceMemoPanel
+          error={directorIssueVoiceMemos.error}
+          isUploading={directorIssueVoiceMemos.isUploading}
+          memos={
+            directorIssueVoiceMemos.memosByIssue[
+              directorVoiceMemoTarget.id
+            ] ?? []
+          }
+          onClose={directorIssueVoiceMemos.closePanel}
+          onUpload={(blob, durationMs, mimeType) =>
+            directorIssueVoiceMemos.uploadMemo(
+              directorVoiceMemoTarget.id,
+              blob,
+              durationMs,
+              mimeType,
+            )
+          }
+          readerRole="director"
+          readerTechnicianName={null}
+          signedUrls={directorIssueVoiceMemos.signedUrls}
+          target={{
+            channelNumber: directorVoiceMemoTarget.channel_number,
+            cueValue: directorVoiceMemoTarget.cue_value,
+            id: directorVoiceMemoTarget.id,
+            positionName: directorVoiceMemoTarget.position_name,
           }}
         />
       ) : null}
@@ -3301,10 +3407,12 @@ function TechOverviewCard({
   now,
   onOpenChat,
   onOpenContextMenu,
+  onOpenVoiceMemos,
   queueCount,
   resolvedCount,
   technicianId,
   technicianName,
+  voiceMemoUnreadCount,
   workingCount,
 }: {
   chatUnreadCount: number;
@@ -3317,10 +3425,12 @@ function TechOverviewCard({
   now: number | null;
   onOpenChat: () => void;
   onOpenContextMenu: (x: number, y: number) => void;
+  onOpenVoiceMemos: () => void;
   queueCount: number;
   resolvedCount: number;
   technicianId: TemporaryTechnicianId;
   technicianName: string;
+  voiceMemoUnreadCount: number;
   workingCount: number;
 }) {
   const workloadClassName =
@@ -3369,6 +3479,11 @@ function TechOverviewCard({
                 compact
                 onClick={onOpenChat}
                 unreadCount={chatUnreadCount}
+              />
+              <IssueVoiceMemoButton
+                compact
+                onClick={onOpenVoiceMemos}
+                unreadCount={voiceMemoUnreadCount}
               />
             </span>
           ) : null}

@@ -59,6 +59,11 @@ import {
   useIssueChat,
 } from "@/components/issue-chat";
 import {
+  IssueVoiceMemoButton,
+  IssueVoiceMemoPanel,
+  useIssueVoiceMemos,
+} from "@/components/issue-voice-memos";
+import {
   playSuccess,
   playTechAdditionalHelperAssigned,
   playTechAdditionalRequestAccepted,
@@ -711,6 +716,23 @@ export default function TechnicianConsolePage() {
         (issue) => issue.id === technicianIssueChat.openIssueId,
       ) ?? null
     : null;
+  const technicianIssueVoiceMemos = useIssueVoiceMemos({
+    issueIds: technicianChatIssueIds,
+    readerRole: "technician",
+    readerTechnicianName: selectedTechnician,
+    sessionId:
+      activeSession && activeSession.show_id === activeShow?.id
+        ? activeSession.id
+        : null,
+    showId: activeShow?.id,
+  });
+  const technicianVoiceMemoTarget =
+    technicianIssueVoiceMemos.openIssueId
+      ? issues.find(
+          (issue) =>
+            issue.id === technicianIssueVoiceMemos.openIssueId,
+        ) ?? null
+      : null;
   const [activeAssignments, setActiveAssignments] = useState<
     IssueAssignment[]
   >([]);
@@ -2164,6 +2186,14 @@ export default function TechnicianConsolePage() {
                 technicianIssueChat.unreadByIssue[issue.id] ?? 0
               }
             />
+            <IssueVoiceMemoButton
+              onClick={() =>
+                technicianIssueVoiceMemos.openPanel(issue.id)
+              }
+              unreadCount={
+                technicianIssueVoiceMemos.unreadByIssue[issue.id] ?? 0
+              }
+            />
             <span
               className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] ${getIssueStatusClassName(issue.status)}`}
             >
@@ -3167,6 +3197,35 @@ export default function TechnicianConsolePage() {
             cueValue: technicianChatTarget.cue_value,
             id: technicianChatTarget.id,
             positionName: technicianChatTarget.position_name,
+          }}
+        />
+      ) : null}
+      {technicianVoiceMemoTarget ? (
+        <IssueVoiceMemoPanel
+          error={technicianIssueVoiceMemos.error}
+          isUploading={technicianIssueVoiceMemos.isUploading}
+          memos={
+            technicianIssueVoiceMemos.memosByIssue[
+              technicianVoiceMemoTarget.id
+            ] ?? []
+          }
+          onClose={technicianIssueVoiceMemos.closePanel}
+          onUpload={(blob, durationMs, mimeType) =>
+            technicianIssueVoiceMemos.uploadMemo(
+              technicianVoiceMemoTarget.id,
+              blob,
+              durationMs,
+              mimeType,
+            )
+          }
+          readerRole="technician"
+          readerTechnicianName={selectedTechnician}
+          signedUrls={technicianIssueVoiceMemos.signedUrls}
+          target={{
+            channelNumber: technicianVoiceMemoTarget.channel_number,
+            cueValue: technicianVoiceMemoTarget.cue_value,
+            id: technicianVoiceMemoTarget.id,
+            positionName: technicianVoiceMemoTarget.position_name,
           }}
         />
       ) : null}
