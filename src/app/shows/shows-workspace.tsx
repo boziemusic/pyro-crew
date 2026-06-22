@@ -207,6 +207,7 @@ export function ShowsWorkspace() {
             isEntering={false}
             message={null}
             onCompleteJoin={async () => false}
+            onContinue={() => undefined}
             onVerifyCode={async () => false}
             supabaseConfigured={false}
           />
@@ -1101,8 +1102,7 @@ function ConfiguredShowsWorkspace() {
         technicianId: normalizedTechnicianName,
       });
       playTechnicianJoined();
-      router.push("/technician");
-      return true;
+      return verifiedTechnicianJoin.show.name;
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown join error.";
@@ -1119,6 +1119,7 @@ function ConfiguredShowsWorkspace() {
         isEntering={isEnteringTechnicianConsole}
         message={mobileEntryMessage}
         onCompleteJoin={completeTechnicianJoin}
+        onContinue={() => router.push("/technician")}
         onVerifyCode={async (showCode) => {
           setMobileEntryMessage(null);
           return Boolean(await verifyTechnicianShowCode(showCode));
@@ -1818,12 +1819,14 @@ function MobileTechnicianEntry({
   isEntering,
   message,
   onCompleteJoin,
+  onContinue,
   onVerifyCode,
   supabaseConfigured,
 }: {
   isEntering: boolean;
   message: string | null;
-  onCompleteJoin: (technicianName: string) => Promise<boolean>;
+  onCompleteJoin: (technicianName: string) => Promise<string | false>;
+  onContinue: () => void;
   onVerifyCode: (showCode: string) => Promise<boolean>;
   supabaseConfigured: boolean;
 }) {
@@ -1831,6 +1834,7 @@ function MobileTechnicianEntry({
   const [technicianName, setTechnicianName] = useState("");
   const [nameValidation, setNameValidation] = useState<string | null>(null);
   const [isNameModalOpen, setIsNameModalOpen] = useState(false);
+  const [welcomeShowName, setWelcomeShowName] = useState<string | null>(null);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [scannerError, setScannerError] = useState<string | null>(null);
   const normalizedJoinCode = normalizeJoinCode(joinCode);
@@ -1868,18 +1872,17 @@ function MobileTechnicianEntry({
       return;
     }
 
-    if (await onCompleteJoin(normalizedName)) {
+    const joinedShowName = await onCompleteJoin(normalizedName);
+    if (joinedShowName) {
       setIsNameModalOpen(false);
+      setWelcomeShowName(joinedShowName);
     }
   };
 
   return (
-    <div className="mx-auto flex min-h-[100dvh] w-full max-w-lg flex-col justify-center gap-5 px-4 py-5">
+    <div className="mx-auto flex w-full max-w-lg flex-col gap-5 px-4 py-4">
       <section className="rounded-xl border border-[#8b5cf6]/35 bg-[#0b1020]/95 p-5 shadow-2xl shadow-black/30">
-        <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#a78bfa]">
-          Technician Entry
-        </p>
-        <h1 className="mt-3 text-3xl font-semibold text-white">
+        <h1 className="text-3xl font-semibold text-white">
           Technician Login
         </h1>
         <p className="mt-3 text-sm leading-6 text-[#b6c3d1]">
@@ -2028,6 +2031,49 @@ function MobileTechnicianEntry({
               {isEntering ? "Joining..." : "Go"}
             </button>
           </form>
+        </div>
+      ) : null}
+      {welcomeShowName ? (
+        <div
+          aria-labelledby="technician-welcome-title"
+          aria-modal="true"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-5 backdrop-blur-sm"
+          role="dialog"
+        >
+          <section className="w-full max-w-md overflow-hidden rounded-xl border border-[#8b5cf6]/45 bg-[#0b1020] shadow-2xl shadow-black/70">
+            <div className="border-b border-white/10 p-6">
+              <p
+                className="text-sm font-bold uppercase tracking-[0.18em] text-[#a78bfa]"
+                id="technician-welcome-title"
+              >
+                Welcome
+              </p>
+              <p className="mt-4 text-base leading-7 text-[#dbe4ef]">
+                You have joined as a field tech on:
+              </p>
+              <p className="mt-2 text-2xl font-extrabold leading-8 text-white">
+                {welcomeShowName}
+              </p>
+            </div>
+
+            <div className="border-b border-white/10 bg-[#070b18]/55 p-6">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#94a3b8]">
+                Continuity Director
+              </p>
+              <p className="mt-2 text-xl font-bold text-white">Director</p>
+            </div>
+
+            <div className="p-5">
+              <button
+                autoFocus
+                className="min-h-14 w-full touch-manipulation rounded-xl bg-[#6d28d9] px-5 py-3 text-lg font-bold text-white transition active:bg-[#7c3aed]"
+                onClick={onContinue}
+                type="button"
+              >
+                Continue
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
     </div>
