@@ -1494,6 +1494,13 @@ export default function TechnicianConsolePage() {
       latestStatusUpdateTimes,
     ],
   );
+  const technicianCommunicationIssue = workingIssues[0]
+    ? {
+        channelNumber: workingIssues[0].channel_number,
+        cueValue: workingIssues[0].cue_value,
+        positionName: workingIssues[0].position_name,
+      }
+    : null;
 
   const fieldResponseIssues = useMemo(
     () =>
@@ -3223,6 +3230,7 @@ export default function TechnicianConsolePage() {
       {technicianDirectChat.openTechnicianName ? (
         <DirectChatWindow
           error={technicianDirectChat.error}
+          issueContext={technicianCommunicationIssue}
           isSending={technicianDirectChat.isSending}
           messages={
             technicianDirectChat.messagesByTechnician[
@@ -3292,6 +3300,7 @@ export default function TechnicianConsolePage() {
         <DirectVoiceChatPanel
           autoPlayMemoId={autoPlayVoiceMemoId}
           error={technicianDirectVoiceChat.error}
+          issueContext={technicianCommunicationIssue}
           isUploading={technicianDirectVoiceChat.isUploading}
           memos={
             technicianDirectVoiceChat.memosByTechnician[

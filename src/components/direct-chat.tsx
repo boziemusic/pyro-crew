@@ -10,6 +10,10 @@ import {
 } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getTemporaryTechnicianLabel } from "./temporary-technician-store";
+import {
+  CommunicationIssueRider,
+  type CommunicationIssueContext,
+} from "./communication-issue-rider";
 import { playChatMessage } from "@/lib/app-feedback";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 
@@ -474,6 +478,7 @@ export function DirectChatButton({
 
 export function DirectChatWindow({
   error,
+  issueContext,
   isSending,
   messages,
   onClose,
@@ -483,6 +488,7 @@ export function DirectChatWindow({
   technicianName,
 }: {
   error: string | null;
+  issueContext: CommunicationIssueContext | null;
   isSending: boolean;
   messages: DirectMessage[];
   onClose: () => void;
@@ -530,6 +536,7 @@ export function DirectChatWindow({
             Close
           </button>
         </header>
+        <CommunicationIssueRider issue={issueContext} />
         <div className="min-h-48 flex-1 space-y-3 overflow-y-auto px-4 py-4">
           {messages.length === 0 ? (
             <p className="rounded-lg border border-dashed border-white/15 p-4 text-center text-sm text-[#94a3b8]">

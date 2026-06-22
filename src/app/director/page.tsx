@@ -1206,6 +1206,28 @@ export default function DirectorConsolePage() {
       })),
     [technicianOverview],
   );
+  const directorCommunicationIssue = useMemo(() => {
+    const technicianName =
+      directorDirectChat.openTechnicianName ??
+      directorDirectVoiceChat.openTechnicianName;
+    const issue = technicianName
+      ? technicianOverview.find(
+          (technician) => technician.id === technicianName,
+        )?.currentIssue?.issue
+      : null;
+
+    return issue
+      ? {
+          channelNumber: issue.channel_number,
+          cueValue: issue.cue_value,
+          positionName: issue.position_name,
+        }
+      : null;
+  }, [
+    directorDirectChat.openTechnicianName,
+    directorDirectVoiceChat.openTechnicianName,
+    technicianOverview,
+  ]);
 
   const confirmRemoveTechnician = async () => {
     if (!technicianRemovalTarget || !activeShow || !sessionForActiveShow) {
@@ -3063,6 +3085,7 @@ export default function DirectorConsolePage() {
       {directorDirectChat.openTechnicianName ? (
         <DirectChatWindow
           error={directorDirectChat.error}
+          issueContext={directorCommunicationIssue}
           isSending={directorDirectChat.isSending}
           messages={
             directorDirectChat.messagesByTechnician[
@@ -3085,6 +3108,7 @@ export default function DirectorConsolePage() {
         <DirectVoiceChatPanel
           autoPlayMemoId={directorAutoPlayVoiceMemoId}
           error={directorDirectVoiceChat.error}
+          issueContext={directorCommunicationIssue}
           isUploading={directorDirectVoiceChat.isUploading}
           memos={
             directorDirectVoiceChat.memosByTechnician[

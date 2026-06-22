@@ -9,6 +9,10 @@ import {
 } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getTemporaryTechnicianLabel } from "./temporary-technician-store";
+import {
+  CommunicationIssueRider,
+  type CommunicationIssueContext,
+} from "./communication-issue-rider";
 import { playVoiceMemoMessage } from "@/lib/app-feedback";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 
@@ -702,6 +706,7 @@ export function IssueVoiceMemoButton({
 export function IssueVoiceMemoPanel({
   autoPlayMemoId = null,
   error,
+  issueContext = null,
   isUploading,
   memos,
   onClose,
@@ -713,6 +718,7 @@ export function IssueVoiceMemoPanel({
 }: {
   autoPlayMemoId?: string | null;
   error: string | null;
+  issueContext?: CommunicationIssueContext | null;
   isUploading: boolean;
   memos: IssueVoiceMemo[];
   onClose: () => void;
@@ -1084,6 +1090,7 @@ export function IssueVoiceMemoPanel({
             Close
           </button>
         </header>
+        <CommunicationIssueRider issue={issueContext} />
 
         <div className="min-h-36 flex-1 space-y-3 overflow-y-auto px-4 py-4">
           {!latestMemo ? (
