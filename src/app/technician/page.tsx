@@ -54,15 +54,15 @@ import { TechnicianMapAssist } from "@/components/technician-map-assist";
 import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
 import { useIsMobileDevice } from "@/components/mobile-device";
 import {
-  IssueChatButton,
-  IssueChatWindow,
-  useIssueChat,
-} from "@/components/issue-chat";
+  DirectChatButton,
+  DirectChatWindow,
+  useDirectChat,
+} from "@/components/direct-chat";
 import {
-  IssueVoiceMemoButton,
-  IssueVoiceMemoPanel,
-  useIssueVoiceMemos,
-} from "@/components/issue-voice-memos";
+  DirectVoiceChatButton,
+  DirectVoiceChatPanel,
+  useDirectVoiceChat,
+} from "@/components/direct-voice-chat";
 import {
   playSuccess,
   playTechAdditionalHelperAssigned,
@@ -697,12 +697,7 @@ export default function TechnicianConsolePage() {
     selectedTechnician,
   );
   const [issues, setIssues] = useState<TechnicianIssue[]>([]);
-  const technicianChatIssueIds = useMemo(
-    () => issues.map((issue) => issue.id),
-    [issues],
-  );
-  const technicianIssueChat = useIssueChat({
-    issueIds: technicianChatIssueIds,
+  const technicianDirectChat = useDirectChat({
     readerRole: "technician",
     readerTechnicianName: selectedTechnician,
     sessionId:
@@ -710,14 +705,9 @@ export default function TechnicianConsolePage() {
         ? activeSession.id
         : null,
     showId: activeShow?.id,
+    technicianNames: [selectedTechnician],
   });
-  const technicianChatTarget = technicianIssueChat.openIssueId
-    ? issues.find(
-        (issue) => issue.id === technicianIssueChat.openIssueId,
-      ) ?? null
-    : null;
-  const technicianIssueVoiceMemos = useIssueVoiceMemos({
-    issueIds: technicianChatIssueIds,
+  const technicianDirectVoiceChat = useDirectVoiceChat({
     readerRole: "technician",
     readerTechnicianName: selectedTechnician,
     sessionId:
@@ -725,25 +715,10 @@ export default function TechnicianConsolePage() {
         ? activeSession.id
         : null,
     showId: activeShow?.id,
+    technicianNames: [selectedTechnician],
   });
-  const technicianVoiceMemoTarget =
-    technicianIssueVoiceMemos.openIssueId
-      ? issues.find(
-          (issue) =>
-            issue.id === technicianIssueVoiceMemos.openIssueId,
-        ) ?? null
-      : null;
   const technicianVoiceChatPopupMemo =
-    technicianIssueVoiceMemos.newClosedMemo;
-  const technicianVoiceChatPopupIssue =
-    technicianVoiceChatPopupMemo &&
-    technicianVoiceChatPopupMemo.issue_id !==
-      technicianIssueVoiceMemos.openIssueId
-      ? issues.find(
-          (issue) =>
-            issue.id === technicianVoiceChatPopupMemo.issue_id,
-        ) ?? null
-      : null;
+    technicianDirectVoiceChat.newClosedMemo;
   const [autoPlayVoiceMemoId, setAutoPlayVoiceMemoId] = useState<
     string | null
   >(null);
@@ -2194,18 +2169,31 @@ export default function TechnicianConsolePage() {
             ) : null}
           </div>
           <div className="flex items-center gap-3">
-            <IssueChatButton
-              onClick={() => technicianIssueChat.openChat(issue.id)}
+            <DirectChatButton
+              onClick={() =>
+                technicianDirectChat.openChat(selectedTechnician)
+              }
               unreadCount={
-                technicianIssueChat.unreadByIssue[issue.id] ?? 0
+                technicianDirectChat.unreadByTechnician[
+                  selectedTechnician
+                ] ?? 0
               }
             />
-            <IssueVoiceMemoButton
-              onClick={() =>
-                technicianIssueVoiceMemos.openPanel(issue.id)
-              }
+            <DirectVoiceChatButton
+              onClick={() => {
+                setAutoPlayVoiceMemoId(
+                  technicianDirectVoiceChat.latestUnreadByTechnician[
+                    selectedTechnician
+                  ]?.id ?? null,
+                );
+                technicianDirectVoiceChat.openPanel(
+                  selectedTechnician,
+                );
+              }}
               unreadCount={
-                technicianIssueVoiceMemos.unreadByIssue[issue.id] ?? 0
+                technicianDirectVoiceChat.unreadByTechnician[
+                  selectedTechnician
+                ] ?? 0
               }
             />
             <span
@@ -2383,10 +2371,31 @@ export default function TechnicianConsolePage() {
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          <IssueChatButton
-            onClick={() => technicianIssueChat.openChat(issue.id)}
+          <DirectChatButton
+            onClick={() =>
+              technicianDirectChat.openChat(selectedTechnician)
+            }
             unreadCount={
-              technicianIssueChat.unreadByIssue[issue.id] ?? 0
+              technicianDirectChat.unreadByTechnician[
+                selectedTechnician
+              ] ?? 0
+            }
+          />
+          <DirectVoiceChatButton
+            onClick={() => {
+              setAutoPlayVoiceMemoId(
+                technicianDirectVoiceChat.latestUnreadByTechnician[
+                  selectedTechnician
+                ]?.id ?? null,
+              );
+              technicianDirectVoiceChat.openPanel(
+                selectedTechnician,
+              );
+            }}
+            unreadCount={
+              technicianDirectVoiceChat.unreadByTechnician[
+                selectedTechnician
+              ] ?? 0
             }
           />
           <button
@@ -2436,7 +2445,12 @@ export default function TechnicianConsolePage() {
   const refreshTechnicianConsole = async () => {
     setIsManuallyRefreshing(true);
     try {
-      await Promise.all([refreshIssues(), refreshNotices()]);
+      await Promise.all([
+        refreshIssues(),
+        refreshNotices(),
+        technicianDirectChat.refresh(),
+        technicianDirectVoiceChat.refresh(),
+      ]);
     } finally {
       setIsManuallyRefreshing(false);
     }
@@ -2459,28 +2473,33 @@ export default function TechnicianConsolePage() {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button
-            aria-label="Refresh technician console"
-            className="flex h-11 w-11 touch-manipulation items-center justify-center rounded-lg border border-white/15 bg-[#0d1324] text-white active:bg-[#17102c] disabled:opacity-50"
-            disabled={isManuallyRefreshing}
-            onClick={() => void refreshTechnicianConsole()}
-            type="button"
-          >
-            <svg
-              aria-hidden="true"
-              className={`h-5 w-5 ${isManuallyRefreshing ? "animate-spin" : ""}`}
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <path
-                d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="2"
-              />
-            </svg>
-          </button>
+          <DirectChatButton
+            onClick={() =>
+              technicianDirectChat.openChat(selectedTechnician)
+            }
+            unreadCount={
+              technicianDirectChat.unreadByTechnician[
+                selectedTechnician
+              ] ?? 0
+            }
+          />
+          <DirectVoiceChatButton
+            onClick={() => {
+              setAutoPlayVoiceMemoId(
+                technicianDirectVoiceChat.latestUnreadByTechnician[
+                  selectedTechnician
+                ]?.id ?? null,
+              );
+              technicianDirectVoiceChat.openPanel(
+                selectedTechnician,
+              );
+            }}
+            unreadCount={
+              technicianDirectVoiceChat.unreadByTechnician[
+                selectedTechnician
+              ] ?? 0
+            }
+          />
           <MobileTechnicianAlertToggle />
           <div className="relative">
           <button
@@ -2520,6 +2539,19 @@ export default function TechnicianConsolePage() {
               >
                 Technician Console
               </Link>
+              <button
+                className="flex min-h-11 items-center rounded-md px-3 text-left text-sm font-semibold text-[#dbe4ef] active:bg-white/10 disabled:opacity-50"
+                disabled={isManuallyRefreshing}
+                onClick={() => {
+                  setIsMobileMenuOpen(false);
+                  void refreshTechnicianConsole();
+                }}
+                type="button"
+              >
+                {isManuallyRefreshing
+                  ? "Refreshing…"
+                  : "Refresh Console"}
+              </button>
               <button
                 className="min-h-11 rounded-md px-3 text-left text-sm font-semibold text-[#fecaca] active:bg-[#2a0b13]"
                 onClick={clearActiveShow}
@@ -3188,34 +3220,28 @@ export default function TechnicianConsolePage() {
           </section>
         </div>
       ) : null}
-      {technicianChatTarget ? (
-        <IssueChatWindow
-          error={technicianIssueChat.error}
-          isSending={technicianIssueChat.isSending}
+      {technicianDirectChat.openTechnicianName ? (
+        <DirectChatWindow
+          error={technicianDirectChat.error}
+          isSending={technicianDirectChat.isSending}
           messages={
-            technicianIssueChat.messagesByIssue[
-              technicianChatTarget.id
+            technicianDirectChat.messagesByTechnician[
+              selectedTechnician
             ] ?? []
           }
-          onClose={technicianIssueChat.closeChat}
+          onClose={technicianDirectChat.closeChat}
           onSend={(body) =>
-            technicianIssueChat.sendMessage(
-              technicianChatTarget.id,
+            technicianDirectChat.sendMessage(
+              selectedTechnician,
               body,
             )
           }
           readerRole="technician"
           readerTechnicianName={selectedTechnician}
-          target={{
-            channelNumber: technicianChatTarget.channel_number,
-            cueValue: technicianChatTarget.cue_value,
-            id: technicianChatTarget.id,
-            positionName: technicianChatTarget.position_name,
-          }}
+          technicianName={selectedTechnician}
         />
       ) : null}
-      {technicianVoiceChatPopupMemo &&
-      technicianVoiceChatPopupIssue ? (
+      {technicianVoiceChatPopupMemo ? (
         <div
           aria-labelledby="technician-new-voice-chat-title"
           aria-modal="true"
@@ -3230,26 +3256,13 @@ export default function TechnicianConsolePage() {
               New Voice Chat
             </p>
             <p className="mt-4 text-base font-semibold leading-7 text-white">
-              A new voice message was sent for CH{" "}
-              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
-                {technicianVoiceChatPopupIssue.channel_number}
-              </strong>
-              <span className="text-[#94a3b8]"> | </span>
-              Cue(s){" "}
-              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
-                {technicianVoiceChatPopupIssue.cue_value}
-              </strong>{" "}
-              at{" "}
-              <strong className="font-bold text-[#4ade80]">
-                {technicianVoiceChatPopupIssue.position_name ?? "—"}
-              </strong>
-              .
+              The Director sent you a new voice message.
             </p>
             <div className="mt-6 grid gap-3 sm:grid-cols-2">
               <button
                 className="min-h-12 rounded-lg border border-white/15 bg-[#111827] px-4 py-3 text-sm font-bold text-[#dbe4ef]"
                 onClick={
-                  technicianIssueVoiceMemos.clearNewClosedMemo
+                  technicianDirectVoiceChat.clearNewClosedMemo
                 }
                 type="button"
               >
@@ -3262,9 +3275,9 @@ export default function TechnicianConsolePage() {
                   setAutoPlayVoiceMemoId(
                     technicianVoiceChatPopupMemo.id,
                   );
-                  technicianIssueVoiceMemos.clearNewClosedMemo();
-                  technicianIssueVoiceMemos.openPanel(
-                    technicianVoiceChatPopupIssue.id,
+                  technicianDirectVoiceChat.clearNewClosedMemo();
+                  technicianDirectVoiceChat.openPanel(
+                    selectedTechnician,
                   );
                 }}
                 type="button"
@@ -3275,23 +3288,23 @@ export default function TechnicianConsolePage() {
           </section>
         </div>
       ) : null}
-      {technicianVoiceMemoTarget ? (
-        <IssueVoiceMemoPanel
+      {technicianDirectVoiceChat.openTechnicianName ? (
+        <DirectVoiceChatPanel
           autoPlayMemoId={autoPlayVoiceMemoId}
-          error={technicianIssueVoiceMemos.error}
-          isUploading={technicianIssueVoiceMemos.isUploading}
+          error={technicianDirectVoiceChat.error}
+          isUploading={technicianDirectVoiceChat.isUploading}
           memos={
-            technicianIssueVoiceMemos.memosByIssue[
-              technicianVoiceMemoTarget.id
+            technicianDirectVoiceChat.memosByTechnician[
+              selectedTechnician
             ] ?? []
           }
           onClose={() => {
             setAutoPlayVoiceMemoId(null);
-            technicianIssueVoiceMemos.closePanel();
+            technicianDirectVoiceChat.closePanel();
           }}
           onUpload={(blob, durationMs, mimeType) =>
-            technicianIssueVoiceMemos.uploadMemo(
-              technicianVoiceMemoTarget.id,
+            technicianDirectVoiceChat.uploadMemo(
+              selectedTechnician,
               blob,
               durationMs,
               mimeType,
@@ -3299,12 +3312,9 @@ export default function TechnicianConsolePage() {
           }
           readerRole="technician"
           readerTechnicianName={selectedTechnician}
-          signedUrls={technicianIssueVoiceMemos.signedUrls}
+          signedUrls={technicianDirectVoiceChat.signedUrls}
           target={{
-            channelNumber: technicianVoiceMemoTarget.channel_number,
-            cueValue: technicianVoiceMemoTarget.cue_value,
-            id: technicianVoiceMemoTarget.id,
-            positionName: technicianVoiceMemoTarget.position_name,
+            technicianName: selectedTechnician,
           }}
         />
       ) : null}

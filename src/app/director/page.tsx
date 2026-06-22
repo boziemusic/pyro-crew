@@ -24,17 +24,23 @@ import {
   type TechnicianMapLocation,
 } from "@/components/director-tech-location-map";
 import {
-  IssueChatButton,
-  IssueChatWindow,
   purgeIssueChatSession,
-  useIssueChat,
 } from "@/components/issue-chat";
 import {
-  IssueVoiceMemoButton,
-  IssueVoiceMemoPanel,
   purgeIssueVoiceMemos,
-  useIssueVoiceMemos,
 } from "@/components/issue-voice-memos";
+import {
+  DirectChatButton,
+  DirectChatWindow,
+  purgeDirectMessages,
+  useDirectChat,
+} from "@/components/direct-chat";
+import {
+  DirectVoiceChatButton,
+  DirectVoiceChatPanel,
+  purgeDirectVoiceChat,
+  useDirectVoiceChat,
+} from "@/components/direct-voice-chat";
 import { useFieldMap } from "@/components/field-map-store";
 import { useShowPositions } from "@/components/position-store";
 import {
@@ -405,52 +411,52 @@ export default function DirectorConsolePage() {
   const [issueAssignmentHistory, setIssueAssignmentHistory] = useState<
     IssueAssignmentHistory[]
   >([]);
-  const directorChatIssueIds = useMemo(
+  const communicationTechnicianNames = useMemo(
     () =>
-      issues
-        .filter(
-          (issue) => issue.session_id === sessionForActiveShow?.id,
-        )
-        .map((issue) => issue.id),
-    [issues, sessionForActiveShow?.id],
+      [
+        ...new Set([
+          ...sessionJoinedTechnicianNames,
+          ...Object.values(technicianAssignments),
+          ...Object.values(additionalAssignments),
+        ]),
+      ].filter(Boolean),
+    [
+      additionalAssignments,
+      sessionJoinedTechnicianNames,
+      technicianAssignments,
+    ],
   );
-  const directorIssueChat = useIssueChat({
-    issueIds: directorChatIssueIds,
+  const directorDirectChat = useDirectChat({
     readerRole: "director",
     readerTechnicianName: null,
     sessionId: sessionForActiveShow?.id,
     showId: activeShow?.id,
+    technicianNames: communicationTechnicianNames,
   });
-  const directorChatTarget = directorIssueChat.openIssueId
-    ? issues.find(
-        (issue) => issue.id === directorIssueChat.openIssueId,
-      ) ?? null
-    : null;
-  const directorIssueVoiceMemos = useIssueVoiceMemos({
-    issueIds: directorChatIssueIds,
+  const directorDirectVoiceChat = useDirectVoiceChat({
     readerRole: "director",
     readerTechnicianName: null,
     sessionId: sessionForActiveShow?.id,
     showId: activeShow?.id,
+    technicianNames: communicationTechnicianNames,
   });
-  const directorVoiceMemoTarget = directorIssueVoiceMemos.openIssueId
-    ? issues.find(
-        (issue) => issue.id === directorIssueVoiceMemos.openIssueId,
-      ) ?? null
-    : null;
+  const [directorAutoPlayVoiceMemoId, setDirectorAutoPlayVoiceMemoId] =
+    useState<string | null>(null);
   const directorUnreadCommunicationCount = useMemo(
     () =>
-      Object.values(directorIssueChat.unreadByIssue).reduce(
+      Object.values(directorDirectChat.unreadByTechnician).reduce(
         (total, count) => total + count,
         0,
       ) +
-      Object.values(directorIssueVoiceMemos.unreadByIssue).reduce(
+      Object.values(
+        directorDirectVoiceChat.unreadByTechnician,
+      ).reduce(
         (total, count) => total + count,
         0,
       ),
     [
-      directorIssueChat.unreadByIssue,
-      directorIssueVoiceMemos.unreadByIssue,
+      directorDirectChat.unreadByTechnician,
+      directorDirectVoiceChat.unreadByTechnician,
     ],
   );
   const [expandedStatuses, setExpandedStatuses] = useState<Set<string>>(
@@ -1119,23 +1125,12 @@ export default function DirectorConsolePage() {
         const awaitingDirectorCount = activeIssues.filter(({ issue }) =>
           overviewAttentionStatuses.has(issue.status),
         ).length;
-        const hasUnreadCommunication = technicianIssues.some((issue) => {
-          const unreadRecords = [
-            directorIssueChat.latestUnreadByIssue[issue.id],
-            directorIssueVoiceMemos.latestUnreadByIssue[issue.id],
-          ].filter(Boolean);
-
-          return unreadRecords.some((record) => {
-            if (record.sender_technician_name) {
-              return record.sender_technician_name === technician.id;
-            }
-
-            return (
-              technicianAssignments[issue.id] === technician.id ||
-              additionalAssignments[issue.id] === technician.id
-            );
-          });
-        });
+        const hasUnreadCommunication =
+          (directorDirectChat.unreadByTechnician[technician.id] ?? 0) >
+            0 ||
+          (directorDirectVoiceChat.unreadByTechnician[
+            technician.id
+          ] ?? 0) > 0;
 
         return {
           ...technician,
@@ -1180,8 +1175,8 @@ export default function DirectorConsolePage() {
       additionalAssignmentTimes,
       additionalAssignments,
       currentStatusEnteredAt,
-      directorIssueChat.latestUnreadByIssue,
-      directorIssueVoiceMemos.latestUnreadByIssue,
+      directorDirectChat.unreadByTechnician,
+      directorDirectVoiceChat.unreadByTechnician,
       issues,
       technicianOptions,
       latestHistoricalTechnicianByIssue,
@@ -1619,6 +1614,26 @@ export default function DirectorConsolePage() {
       return;
     }
 
+    const { error: directMessageCleanupError } =
+      await purgeDirectMessages(supabase, sessionForActiveShow.id);
+    if (directMessageCleanupError) {
+      setSessionSummaryError(
+        `Continuity session ended, but direct messages could not be cleared: ${directMessageCleanupError.message}`,
+      );
+      setIsLoadingSessionSummary(false);
+      return;
+    }
+
+    const { error: directVoiceCleanupError } =
+      await purgeDirectVoiceChat(supabase, sessionForActiveShow.id);
+    if (directVoiceCleanupError) {
+      setSessionSummaryError(
+        `Continuity session ended, but direct Voice Chat could not be cleared: ${directVoiceCleanupError.message}`,
+      );
+      setIsLoadingSessionSummary(false);
+      return;
+    }
+
     const { data: sessionIssuesData, error: issuesError } = await supabase
       .from("issues")
       .select(
@@ -1867,6 +1882,26 @@ export default function DirectorConsolePage() {
       return;
     }
 
+    const { error: directMessageCleanupError } =
+      await purgeDirectMessages(supabase, sessionForActiveShow.id);
+    if (directMessageCleanupError) {
+      setSessionMessage(
+        `Continuity session ended, but direct messages could not be cleared: ${directMessageCleanupError.message}`,
+      );
+      setIsEndingSession(false);
+      return;
+    }
+
+    const { error: directVoiceCleanupError } =
+      await purgeDirectVoiceChat(supabase, sessionForActiveShow.id);
+    if (directVoiceCleanupError) {
+      setSessionMessage(
+        `Continuity session ended, but direct Voice Chat could not be cleared: ${directVoiceCleanupError.message}`,
+      );
+      setIsEndingSession(false);
+      return;
+    }
+
     setActiveContinuitySession(null);
     setEndSessionStep(null);
     setEndSessionSummary(null);
@@ -2107,13 +2142,13 @@ export default function DirectorConsolePage() {
   };
 
   const openTechnicianIssueChat = () => {
-    if (!technicianContextMenu?.currentIssue) {
+    if (!technicianContextMenu) {
       return;
     }
 
-    const issueId = technicianContextMenu.currentIssue.id;
+    const technicianName = technicianContextMenu.technicianId;
     setTechnicianContextMenu(null);
-    directorIssueChat.openChat(issueId);
+    directorDirectChat.openChat(technicianName);
   };
 
   const requestTechnicianRemovalFromMenu = () => {
@@ -2288,18 +2323,14 @@ export default function DirectorConsolePage() {
           {technicianOverview.map((technician) => (
             <TechOverviewCard
               chatUnreadCount={
-                technician.currentIssue
-                  ? (directorIssueChat.unreadByIssue[
-                      technician.currentIssue.issue.id
-                    ] ?? 0)
-                  : 0
+                directorDirectChat.unreadByTechnician[
+                  technician.id
+                ] ?? 0
               }
               voiceMemoUnreadCount={
-                technician.currentIssue
-                  ? (directorIssueVoiceMemos.unreadByIssue[
-                      technician.currentIssue.issue.id
-                    ] ?? 0)
-                  : 0
+                directorDirectVoiceChat.unreadByTechnician[
+                  technician.id
+                ] ?? 0
               }
               currentIssue={technician.currentIssue}
               hasAttention={technician.hasAttention}
@@ -2310,18 +2341,15 @@ export default function DirectorConsolePage() {
               loadCount={technician.activeIssues.length}
               now={timerNow}
               onOpenChat={() => {
-                if (technician.currentIssue) {
-                  directorIssueChat.openChat(
-                    technician.currentIssue.issue.id,
-                  );
-                }
+                directorDirectChat.openChat(technician.id);
               }}
               onOpenVoiceMemos={() => {
-                if (technician.currentIssue) {
-                  directorIssueVoiceMemos.openPanel(
-                    technician.currentIssue.issue.id,
-                  );
-                }
+                setDirectorAutoPlayVoiceMemoId(
+                  directorDirectVoiceChat.latestUnreadByTechnician[
+                    technician.id
+                  ]?.id ?? null,
+                );
+                directorDirectVoiceChat.openPanel(technician.id);
               }}
               onOpenContextMenu={(x, y) =>
                 openTechnicianContextMenu(
@@ -2332,10 +2360,12 @@ export default function DirectorConsolePage() {
                     technicianId: technician.id,
                     technicianName: technician.label,
                     unreadCount: technician.currentIssue
-                      ? (directorIssueChat.unreadByIssue[
-                          technician.currentIssue.issue.id
+                      ? (directorDirectChat.unreadByTechnician[
+                          technician.id
                         ] ?? 0)
-                      : 0,
+                      : directorDirectChat.unreadByTechnician[
+                            technician.id
+                          ] ?? 0,
                   },
                   x,
                   y,
@@ -2416,12 +2446,11 @@ export default function DirectorConsolePage() {
             </button>
             <button
               className="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm font-semibold text-[#bfdbfe] transition hover:bg-[#0b1b35] disabled:cursor-not-allowed disabled:text-[#64748b] disabled:hover:bg-transparent"
-              disabled={!technicianContextMenu.currentIssue}
               onClick={openTechnicianIssueChat}
               role="menuitem"
               type="button"
             >
-              <span>Open Issue Chat</span>
+              <span>Open DM</span>
               {technicianContextMenu.unreadCount > 0 ? (
                 <span className="flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[#ef4444] px-1 text-[10px] font-bold text-white">
                   {technicianContextMenu.unreadCount > 99
@@ -2808,38 +2837,6 @@ export default function DirectorConsolePage() {
                                   />
                                 </Link>
                                 <span className="flex shrink-0 items-center gap-2">
-                                  {issue.session_id ===
-                                  sessionForActiveShow?.id ? (
-                                    <>
-                                      <IssueChatButton
-                                        onClick={() =>
-                                          directorIssueChat.openChat(issue.id)
-                                        }
-                                        unreadCount={
-                                          directorIssueChat.unreadByIssue[
-                                            issue.id
-                                          ] ?? 0
-                                        }
-                                      />
-                                      {![
-                                        "verified_resolved",
-                                        "unfixable",
-                                        "closed",
-                                      ].includes(status) ? (
-                                        <IssueVoiceMemoButton
-                                          onClick={() =>
-                                            directorIssueVoiceMemos.openPanel(
-                                              issue.id,
-                                            )
-                                          }
-                                          unreadCount={
-                                            directorIssueVoiceMemos
-                                              .unreadByIssue[issue.id] ?? 0
-                                          }
-                                        />
-                                      ) : null}
-                                    </>
-                                  ) : null}
                                   {status === "new" ? (
                                     <select
                                       aria-label={`Assign technician to channel ${issue.channel_number}, cue ${issue.cue_value}`}
@@ -3063,40 +3060,44 @@ export default function DirectorConsolePage() {
           </div>
         </div>
       ) : null}
-      {directorChatTarget ? (
-        <IssueChatWindow
-          error={directorIssueChat.error}
-          isSending={directorIssueChat.isSending}
+      {directorDirectChat.openTechnicianName ? (
+        <DirectChatWindow
+          error={directorDirectChat.error}
+          isSending={directorDirectChat.isSending}
           messages={
-            directorIssueChat.messagesByIssue[directorChatTarget.id] ?? []
+            directorDirectChat.messagesByTechnician[
+              directorDirectChat.openTechnicianName
+            ] ?? []
           }
-          onClose={directorIssueChat.closeChat}
+          onClose={directorDirectChat.closeChat}
           onSend={(body) =>
-            directorIssueChat.sendMessage(directorChatTarget.id, body)
+            directorDirectChat.sendMessage(
+              directorDirectChat.openTechnicianName!,
+              body,
+            )
           }
           readerRole="director"
           readerTechnicianName={null}
-          target={{
-            channelNumber: directorChatTarget.channel_number,
-            cueValue: directorChatTarget.cue_value,
-            id: directorChatTarget.id,
-            positionName: directorChatTarget.position_name,
-          }}
+          technicianName={directorDirectChat.openTechnicianName}
         />
       ) : null}
-      {directorVoiceMemoTarget ? (
-        <IssueVoiceMemoPanel
-          error={directorIssueVoiceMemos.error}
-          isUploading={directorIssueVoiceMemos.isUploading}
+      {directorDirectVoiceChat.openTechnicianName ? (
+        <DirectVoiceChatPanel
+          autoPlayMemoId={directorAutoPlayVoiceMemoId}
+          error={directorDirectVoiceChat.error}
+          isUploading={directorDirectVoiceChat.isUploading}
           memos={
-            directorIssueVoiceMemos.memosByIssue[
-              directorVoiceMemoTarget.id
+            directorDirectVoiceChat.memosByTechnician[
+              directorDirectVoiceChat.openTechnicianName
             ] ?? []
           }
-          onClose={directorIssueVoiceMemos.closePanel}
+          onClose={() => {
+            setDirectorAutoPlayVoiceMemoId(null);
+            directorDirectVoiceChat.closePanel();
+          }}
           onUpload={(blob, durationMs, mimeType) =>
-            directorIssueVoiceMemos.uploadMemo(
-              directorVoiceMemoTarget.id,
+            directorDirectVoiceChat.uploadMemo(
+              directorDirectVoiceChat.openTechnicianName!,
               blob,
               durationMs,
               mimeType,
@@ -3104,12 +3105,10 @@ export default function DirectorConsolePage() {
           }
           readerRole="director"
           readerTechnicianName={null}
-          signedUrls={directorIssueVoiceMemos.signedUrls}
+          signedUrls={directorDirectVoiceChat.signedUrls}
           target={{
-            channelNumber: directorVoiceMemoTarget.channel_number,
-            cueValue: directorVoiceMemoTarget.cue_value,
-            id: directorVoiceMemoTarget.id,
-            positionName: directorVoiceMemoTarget.position_name,
+            technicianName:
+              directorDirectVoiceChat.openTechnicianName,
           }}
         />
       ) : null}
@@ -3531,26 +3530,24 @@ function TechOverviewCard({
           <span className="text-xs font-bold text-[#dbe4ef]">
             Load {loadCount}
           </span>
-          {currentIssue ? (
-            <span
-              className="inline-flex items-center gap-1"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-            >
-              <IssueChatButton
-                compact
-                onClick={onOpenChat}
-                unreadCount={chatUnreadCount}
-              />
-              <IssueVoiceMemoButton
-                compact
-                onClick={onOpenVoiceMemos}
-                unreadCount={voiceMemoUnreadCount}
-              />
-            </span>
-          ) : null}
+          <span
+            className="inline-flex items-center gap-1"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            <DirectChatButton
+              compact
+              onClick={onOpenChat}
+              unreadCount={chatUnreadCount}
+            />
+            <DirectVoiceChatButton
+              compact
+              onClick={onOpenVoiceMemos}
+              unreadCount={voiceMemoUnreadCount}
+            />
+          </span>
           <button
             aria-label={`Open actions for ${technicianName}`}
             className="rounded border border-white/15 bg-black/15 px-2 py-1 text-sm font-bold leading-none text-[#cbd5e1] transition hover:border-white/35 hover:text-white"

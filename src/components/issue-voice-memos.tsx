@@ -27,13 +27,14 @@ export type IssueVoiceMemo = {
   duration_ms: number;
   file_size_bytes: number;
   id: string;
-  issue_id: string;
+  issue_id?: string;
   mime_type: string;
   sender_role: string;
   sender_technician_name: string | null;
   session_id: string;
   show_id: string;
   storage_path: string;
+  technician_name?: string;
 };
 
 type IssueVoiceMemoRead = {
@@ -43,10 +44,11 @@ type IssueVoiceMemoRead = {
 };
 
 export type IssueVoiceMemoTarget = {
-  channelNumber: number;
-  cueValue: string;
-  id: string;
-  positionName: string | null;
+  channelNumber?: number;
+  cueValue?: string;
+  id?: string;
+  positionName?: string | null;
+  technicianName?: string;
 };
 
 type PurgeScope =
@@ -406,6 +408,9 @@ export function useIssueVoiceMemos({
     const grouped: Record<string, IssueVoiceMemo[]> = {};
 
     memos.forEach((memo) => {
+      if (!memo.issue_id) {
+        return;
+      }
       grouped[memo.issue_id] = [
         ...(grouped[memo.issue_id] ?? []),
         memo,
@@ -681,7 +686,7 @@ export function IssueVoiceMemoButton({
           : "min-h-9 min-w-9 px-2 text-sm"
       }`}
       onClick={onClick}
-      title="Issue voice chat"
+      title="Voice Chat"
       type="button"
     >
       <span aria-hidden="true">🎙️</span>
@@ -1060,11 +1065,15 @@ export function IssueVoiceMemoPanel({
               className="mt-1 text-sm font-semibold text-white"
               id="issue-voice-chat-title"
             >
-              CH {target.channelNumber} | Cue(s) {target.cueValue}
+              {target.technicianName
+                ? `Director ↔ ${getTemporaryTechnicianLabel(target.technicianName)}`
+                : `CH ${target.channelNumber} | Cue(s) ${target.cueValue}`}
             </h2>
-            <p className="mt-1 text-xs text-[#94a3b8]">
-              Position: {target.positionName ?? "—"}
-            </p>
+            {!target.technicianName ? (
+              <p className="mt-1 text-xs text-[#94a3b8]">
+                Position: {target.positionName ?? "—"}
+              </p>
+            ) : null}
           </div>
           <button
             aria-label="Close issue voice chat"
