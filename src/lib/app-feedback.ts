@@ -437,6 +437,22 @@ export function playVoiceMemoMessage() {
   });
 }
 
+export async function playVoiceMemoAutoplayCue() {
+  if (!getAppFeedbackSettings().soundsEnabled) {
+    return;
+  }
+
+  const unlocked = await unlockAppFeedback();
+  if (!unlocked) {
+    return;
+  }
+
+  await playGeneratedTone(700, 105, 0.025);
+  await new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 145);
+  });
+}
+
 export function playDirectorUnreadCommunicationAttention() {
   if (!getAppFeedbackSettings().soundsEnabled) {
     return;

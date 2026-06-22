@@ -13,7 +13,10 @@ import {
   CommunicationIssueRider,
   type CommunicationIssueContext,
 } from "./communication-issue-rider";
-import { playVoiceMemoMessage } from "@/lib/app-feedback";
+import {
+  playVoiceMemoAutoplayCue,
+  playVoiceMemoMessage,
+} from "@/lib/app-feedback";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 
 const VOICE_MEMO_BUCKET = "issue-voice-memos";
@@ -710,11 +713,13 @@ export function IssueVoiceMemoPanel({
   isUploading,
   memos,
   onClose,
+  onMemoPlaybackStarted,
   onUpload,
   readerRole,
   readerTechnicianName,
   signedUrls,
   target,
+  unreadMemoIds = [],
 }: {
   autoPlayMemoId?: string | null;
   error: string | null;
@@ -722,6 +727,7 @@ export function IssueVoiceMemoPanel({
   isUploading: boolean;
   memos: IssueVoiceMemo[];
   onClose: () => void;
+  onMemoPlaybackStarted?: (memo: IssueVoiceMemo) => void;
   onUpload: (
     blob: Blob,
     durationMs: number,
@@ -731,6 +737,7 @@ export function IssueVoiceMemoPanel({
   readerTechnicianName: string | null;
   signedUrls: Record<string, string>;
   target: IssueVoiceMemoTarget;
+  unreadMemoIds?: string[];
 }) {
   const [recordingState, setRecordingState] = useState<
     "idle" | "requesting" | "recording"
@@ -750,6 +757,10 @@ export function IssueVoiceMemoPanel({
   const elapsedIntervalRef = useRef<number | null>(null);
   const autoPlayAudioRef = useRef<HTMLAudioElement | null>(null);
   const playedAutoMemoIdRef = useRef<string | null>(null);
+  const autoPlaySequenceRef = useRef<string | null>(null);
+  const [failedAutoPlayMemoId, setFailedAutoPlayMemoId] = useState<
+    string | null
+  >(null);
 
   const clearRecordingTimers = useCallback(() => {
     if (stopTimeoutRef.current !== null) {
@@ -954,13 +965,39 @@ export function IssueVoiceMemoPanel({
     if (
       !autoPlayMemoId ||
       !signedUrls[autoPlayMemoId] ||
-      playedAutoMemoIdRef.current === autoPlayMemoId
+      playedAutoMemoIdRef.current === autoPlayMemoId ||
+      autoPlaySequenceRef.current === autoPlayMemoId
     ) {
       return;
     }
 
-    playedAutoMemoIdRef.current = autoPlayMemoId;
-    void autoPlayAudioRef.current?.play().catch(() => undefined);
+    autoPlaySequenceRef.current = autoPlayMemoId;
+    let cancelled = false;
+    const playIncomingMemo = async () => {
+      await playVoiceMemoAutoplayCue();
+      if (cancelled) {
+        return;
+      }
+
+      try {
+        const audio = autoPlayAudioRef.current;
+        if (!audio) {
+          throw new Error("Voice Chat audio is not ready.");
+        }
+        await audio.play();
+        playedAutoMemoIdRef.current = autoPlayMemoId;
+        setFailedAutoPlayMemoId(null);
+      } catch {
+        setFailedAutoPlayMemoId(autoPlayMemoId);
+      } finally {
+        autoPlaySequenceRef.current = null;
+      }
+    };
+
+    void playIncomingMemo();
+    return () => {
+      cancelled = true;
+    };
   }, [autoPlayMemoId, signedUrls]);
 
   const renderMemo = (memo: IssueVoiceMemo) => {
@@ -975,19 +1012,27 @@ export function IssueVoiceMemoPanel({
         : getTemporaryTechnicianLabel(
             memo.sender_technician_name ?? undefined,
           );
+    const isUnread = unreadMemoIds.includes(memo.id);
 
     return (
       <div
         className={`rounded-lg border px-3 py-3 ${
           ownMemo
             ? "border-[#f59e0b]/40 bg-[#2a1c06]"
-            : "border-white/10 bg-[#111827]"
+            : isUnread
+              ? "border-[#ef4444]/55 bg-[#2a0b13]"
+              : "border-white/10 bg-[#111827]"
         }`}
         key={memo.id}
       >
         <div className="flex items-center justify-between gap-3 text-[10px] font-semibold uppercase tracking-[0.1em]">
           <span className={ownMemo ? "text-[#fde68a]" : "text-[#93c5fd]"}>
             {senderLabel}
+            {isUnread ? (
+              <span className="ml-2 rounded-full bg-[#ef4444] px-1.5 py-0.5 text-[9px] text-white">
+                New
+              </span>
+            ) : null}
           </span>
           <span className="text-[#64748b]">
             {formatDuration(memo.duration_ms)} ·{" "}
@@ -999,6 +1044,7 @@ export function IssueVoiceMemoPanel({
             className="mt-2 h-10 w-full"
             controls
             preload="metadata"
+            onPlay={() => onMemoPlaybackStarted?.(memo)}
             ref={
               memo.id === autoPlayMemoId
                 ? autoPlayAudioRef
@@ -1013,6 +1059,11 @@ export function IssueVoiceMemoPanel({
             Loading audio…
           </p>
         )}
+        {failedAutoPlayMemoId === memo.id ? (
+          <p className="mt-2 text-xs font-semibold text-[#fecaca]">
+            Autoplay was blocked. Tap play to hear this new message.
+          </p>
+        ) : null}
       </div>
     );
   };

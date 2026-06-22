@@ -3298,7 +3298,10 @@ export default function TechnicianConsolePage() {
       ) : null}
       {technicianDirectVoiceChat.openTechnicianName ? (
         <DirectVoiceChatPanel
-          autoPlayMemoId={autoPlayVoiceMemoId}
+          autoPlayMemoId={
+            technicianDirectVoiceChat.autoPlayMemoId ??
+            autoPlayVoiceMemoId
+          }
           error={technicianDirectVoiceChat.error}
           issueContext={technicianCommunicationIssue}
           isUploading={technicianDirectVoiceChat.isUploading}
@@ -3306,6 +3309,9 @@ export default function TechnicianConsolePage() {
             technicianDirectVoiceChat.memosByTechnician[
               selectedTechnician
             ] ?? []
+          }
+          onMemoPlaybackStarted={
+            technicianDirectVoiceChat.markMemoPlayed
           }
           onClose={() => {
             setAutoPlayVoiceMemoId(null);
@@ -3325,6 +3331,11 @@ export default function TechnicianConsolePage() {
           target={{
             technicianName: selectedTechnician,
           }}
+          unreadMemoIds={
+            technicianDirectVoiceChat.unreadMemoIdsByTechnician[
+              selectedTechnician
+            ] ?? []
+          }
         />
       ) : null}
 

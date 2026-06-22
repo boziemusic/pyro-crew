@@ -3106,7 +3106,10 @@ export default function DirectorConsolePage() {
       ) : null}
       {directorDirectVoiceChat.openTechnicianName ? (
         <DirectVoiceChatPanel
-          autoPlayMemoId={directorAutoPlayVoiceMemoId}
+          autoPlayMemoId={
+            directorDirectVoiceChat.autoPlayMemoId ??
+            directorAutoPlayVoiceMemoId
+          }
           error={directorDirectVoiceChat.error}
           issueContext={directorCommunicationIssue}
           isUploading={directorDirectVoiceChat.isUploading}
@@ -3114,6 +3117,9 @@ export default function DirectorConsolePage() {
             directorDirectVoiceChat.memosByTechnician[
               directorDirectVoiceChat.openTechnicianName
             ] ?? []
+          }
+          onMemoPlaybackStarted={
+            directorDirectVoiceChat.markMemoPlayed
           }
           onClose={() => {
             setDirectorAutoPlayVoiceMemoId(null);
@@ -3134,6 +3140,11 @@ export default function DirectorConsolePage() {
             technicianName:
               directorDirectVoiceChat.openTechnicianName,
           }}
+          unreadMemoIds={
+            directorDirectVoiceChat.unreadMemoIdsByTechnician[
+              directorDirectVoiceChat.openTechnicianName
+            ] ?? []
+          }
         />
       ) : null}
       {reopenTarget ? (

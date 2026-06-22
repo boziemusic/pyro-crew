@@ -126,6 +126,12 @@ export function useDirectVoiceChat({
   const [isUploading, setIsUploading] = useState(false);
   const [newClosedMemo, setNewClosedMemo] =
     useState<DirectVoiceMemo | null>(null);
+  const [autoPlayMemoId, setAutoPlayMemoId] = useState<string | null>(
+    null,
+  );
+  const [playedMemoIds, setPlayedMemoIds] = useState<Set<string>>(
+    new Set(),
+  );
   const knownMemoIdsRef = useRef<Set<string> | null>(null);
   const markingReadRef = useRef<Set<string>>(new Set());
   const technicianNamesKey = useMemo(
@@ -147,7 +153,7 @@ export function useDirectVoiceChat({
         !sessionId ||
         markingReadRef.current.has(technicianName)
       ) {
-        return;
+        return false;
       }
 
       markingReadRef.current.add(technicianName);
@@ -173,7 +179,7 @@ export function useDirectVoiceChat({
           `Could not update Voice Chat read state: ${readError.message}`,
         );
         markingReadRef.current.delete(technicianName);
-        return;
+        return false;
       }
 
       const now = new Date().toISOString();
@@ -210,6 +216,7 @@ export function useDirectVoiceChat({
         }));
       }
       markingReadRef.current.delete(technicianName);
+      return !result.error;
     },
     [
       readerRole,
@@ -279,15 +286,23 @@ export function useDirectVoiceChat({
     const nextMemos = (memosResult.data ?? []) as DirectVoiceMemo[];
     const previousIds = knownMemoIdsRef.current;
     if (previousIds) {
-      const newMemos = nextMemos.filter(
+      const newIncomingMemos = nextMemos.filter(
         (memo) =>
           !previousIds.has(memo.id) &&
-          memo.technician_name !== openTechnicianName &&
           !isOwnMemo(memo, readerRole, readerTechnicianName),
       );
-      if (newMemos.length > 0) {
-        setNewClosedMemo(newMemos.at(-1) ?? null);
-        playVoiceMemoMessage();
+      const latestIncomingMemo = newIncomingMemos.at(-1);
+
+      if (latestIncomingMemo) {
+        if (
+          latestIncomingMemo.technician_name ===
+          openTechnicianName
+        ) {
+          setAutoPlayMemoId(latestIncomingMemo.id);
+        } else {
+          setNewClosedMemo(latestIncomingMemo);
+          playVoiceMemoMessage();
+        }
       }
     }
 
@@ -304,26 +319,7 @@ export function useDirectVoiceChat({
     setReadsByTechnician(nextReads);
     setError(null);
 
-    if (openTechnicianName) {
-      const latestMemo = nextMemos
-        .filter(
-          (memo) =>
-            memo.technician_name === openTechnicianName,
-        )
-        .at(-1);
-      const currentReadAt =
-        nextReads[openTechnicianName]?.last_read_at;
-      if (
-        latestMemo &&
-        (!currentReadAt ||
-          Date.parse(latestMemo.created_at) >
-            Date.parse(currentReadAt))
-      ) {
-        void markRead(openTechnicianName, latestMemo.created_at);
-      }
-    }
   }, [
-    markRead,
     openTechnicianName,
     readerRole,
     readerTechnicianName,
@@ -427,6 +423,7 @@ export function useDirectVoiceChat({
       ).filter(
         (memo) =>
           !isOwnMemo(memo, readerRole, readerTechnicianName) &&
+          !playedMemoIds.has(memo.id) &&
           (!lastReadAt ||
             Date.parse(memo.created_at) > Date.parse(lastReadAt)),
       ).length;
@@ -438,6 +435,7 @@ export function useDirectVoiceChat({
     readerTechnicianName,
     readsByTechnician,
     stableTechnicianNames,
+    playedMemoIds,
   ]);
 
   const latestUnreadByTechnician = useMemo(() => {
@@ -453,6 +451,7 @@ export function useDirectVoiceChat({
               readerRole,
               readerTechnicianName,
             ) &&
+            !playedMemoIds.has(candidate.id) &&
             (!lastReadAt ||
               Date.parse(candidate.created_at) >
                 Date.parse(lastReadAt)),
@@ -467,6 +466,35 @@ export function useDirectVoiceChat({
     readerTechnicianName,
     readsByTechnician,
     stableTechnicianNames,
+    playedMemoIds,
+  ]);
+
+  const unreadMemoIdsByTechnician = useMemo(() => {
+    const ids: Record<string, string[]> = {};
+    stableTechnicianNames.forEach((technicianName) => {
+      const lastReadAt =
+        readsByTechnician[technicianName]?.last_read_at;
+      ids[technicianName] = (
+        memosByTechnician[technicianName] ?? []
+      )
+        .filter(
+          (memo) =>
+            !isOwnMemo(memo, readerRole, readerTechnicianName) &&
+            !playedMemoIds.has(memo.id) &&
+            (!lastReadAt ||
+              Date.parse(memo.created_at) >
+                Date.parse(lastReadAt)),
+        )
+        .map((memo) => memo.id);
+    });
+    return ids;
+  }, [
+    memosByTechnician,
+    playedMemoIds,
+    readerRole,
+    readerTechnicianName,
+    readsByTechnician,
+    stableTechnicianNames,
   ]);
 
   const openPanel = useCallback(
@@ -477,14 +505,42 @@ export function useDirectVoiceChat({
           ? null
           : current,
       );
-      const latestMemo = (
-        memosByTechnician[technicianName] ?? []
-      ).at(-1);
-      if (latestMemo) {
-        void markRead(technicianName, latestMemo.created_at);
-      }
+      setAutoPlayMemoId(
+        latestUnreadByTechnician[technicianName]?.id ?? null,
+      );
     },
-    [markRead, memosByTechnician],
+    [latestUnreadByTechnician],
+  );
+
+  const markMemoPlayed = useCallback(
+    async (memo: DirectVoiceMemo) => {
+      if (
+        !memo.technician_name ||
+        isOwnMemo(memo, readerRole, readerTechnicianName) ||
+        playedMemoIds.has(memo.id)
+      ) {
+        return;
+      }
+
+      const wasSaved = await markRead(
+        memo.technician_name,
+        memo.created_at,
+      );
+      if (!wasSaved) {
+        return;
+      }
+
+      setPlayedMemoIds((current) => new Set(current).add(memo.id));
+      setAutoPlayMemoId((current) =>
+        current === memo.id ? null : current,
+      );
+    },
+    [
+      markRead,
+      playedMemoIds,
+      readerRole,
+      readerTechnicianName,
+    ],
   );
 
   const uploadMemo = useCallback(
@@ -564,18 +620,21 @@ export function useDirectVoiceChat({
   );
 
   return {
+    autoPlayMemoId,
     clearNewClosedMemo: () => setNewClosedMemo(null),
     closePanel: () => setOpenTechnicianName(null),
     error,
     isUploading,
     latestUnreadByTechnician,
     memosByTechnician,
+    markMemoPlayed,
     newClosedMemo,
     openPanel,
     openTechnicianName,
     refresh,
     signedUrls,
     unreadByTechnician,
+    unreadMemoIdsByTechnician,
     uploadMemo,
   };
 }
