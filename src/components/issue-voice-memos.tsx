@@ -182,6 +182,8 @@ export function useIssueVoiceMemos({
   const [openIssueId, setOpenIssueId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [newClosedMemo, setNewClosedMemo] =
+    useState<IssueVoiceMemo | null>(null);
   const knownMemoIdsRef = useRef<Set<string> | null>(null);
   const markingReadIssueIdsRef = useRef<Set<string>>(new Set());
   const issueIdsKey = useMemo(
@@ -336,14 +338,15 @@ export function useIssueVoiceMemos({
     const previousIds = knownMemoIdsRef.current;
 
     if (previousIds) {
-      const hasClosedPanelMemo = nextMemos.some(
+      const closedPanelMemos = nextMemos.filter(
         (memo) =>
           !previousIds.has(memo.id) &&
           memo.issue_id !== openIssueId &&
           !isOwnMemo(memo, readerRole, readerTechnicianName),
       );
 
-      if (hasClosedPanelMemo) {
+      if (closedPanelMemos.length > 0) {
+        setNewClosedMemo(closedPanelMemos.at(-1) ?? null);
         playVoiceMemoMessage();
       }
     }
@@ -503,10 +506,39 @@ export function useIssueVoiceMemos({
     readsByIssue,
     stableIssueIds,
   ]);
+  const latestUnreadByIssue = useMemo(() => {
+    const latest: Record<string, IssueVoiceMemo> = {};
+
+    stableIssueIds.forEach((issueId) => {
+      const lastReadAt = readsByIssue[issueId]?.last_read_at;
+      const unreadMemos = (memosByIssue[issueId] ?? []).filter(
+        (memo) =>
+          !isOwnMemo(memo, readerRole, readerTechnicianName) &&
+          (!lastReadAt ||
+            Date.parse(memo.created_at) > Date.parse(lastReadAt)),
+      );
+      const latestMemo = unreadMemos.at(-1);
+
+      if (latestMemo) {
+        latest[issueId] = latestMemo;
+      }
+    });
+
+    return latest;
+  }, [
+    memosByIssue,
+    readerRole,
+    readerTechnicianName,
+    readsByIssue,
+    stableIssueIds,
+  ]);
 
   const openPanel = useCallback(
     (issueId: string) => {
       setOpenIssueId(issueId);
+      setNewClosedMemo((current) =>
+        current?.issue_id === issueId ? null : current,
+      );
       const latestMemo = (memosByIssue[issueId] ?? []).at(-1);
 
       if (latestMemo) {
@@ -517,6 +549,10 @@ export function useIssueVoiceMemos({
   );
 
   const closePanel = useCallback(() => setOpenIssueId(null), []);
+  const clearNewClosedMemo = useCallback(
+    () => setNewClosedMemo(null),
+    [],
+  );
 
   const uploadMemo = useCallback(
     async (
@@ -604,9 +640,12 @@ export function useIssueVoiceMemos({
 
   return {
     closePanel,
+    clearNewClosedMemo,
     error,
     isUploading,
+    latestUnreadByIssue,
     memosByIssue,
+    newClosedMemo,
     openIssueId,
     openPanel,
     refresh,
@@ -632,7 +671,11 @@ export function IssueVoiceMemoButton({
           ? `Open voice chat, ${unreadCount} unread`
           : "Open voice chat"
       }
-      className={`relative inline-flex items-center justify-center rounded-md border border-[#f59e0b]/40 bg-[#2a1c06] text-[#fde68a] transition hover:border-[#fbbf24] hover:text-white ${
+      className={`relative inline-flex items-center justify-center rounded-md border text-[#fde68a] transition hover:text-white ${
+        unreadCount > 0
+          ? "border-[#ef4444]/70 bg-[#7f1d1d] shadow-[0_0_14px_rgba(239,68,68,0.28)] hover:border-[#f87171]"
+          : "border-white/15 bg-[#111827] hover:border-[#fbbf24]"
+      } ${
         compact
           ? "min-h-7 min-w-7 px-1 text-xs"
           : "min-h-9 min-w-9 px-2 text-sm"
@@ -652,6 +695,7 @@ export function IssueVoiceMemoButton({
 }
 
 export function IssueVoiceMemoPanel({
+  autoPlayMemoId = null,
   error,
   isUploading,
   memos,
@@ -662,6 +706,7 @@ export function IssueVoiceMemoPanel({
   signedUrls,
   target,
 }: {
+  autoPlayMemoId?: string | null;
   error: string | null;
   isUploading: boolean;
   memos: IssueVoiceMemo[];
@@ -692,6 +737,8 @@ export function IssueVoiceMemoPanel({
   const shouldSendRecordingRef = useRef(false);
   const stopTimeoutRef = useRef<number | null>(null);
   const elapsedIntervalRef = useRef<number | null>(null);
+  const autoPlayAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playedAutoMemoIdRef = useRef<string | null>(null);
 
   const clearRecordingTimers = useCallback(() => {
     if (stopTimeoutRef.current !== null) {
@@ -892,6 +939,19 @@ export function IssueVoiceMemoPanel({
   const latestMemo = memos.at(-1) ?? null;
   const historyMemos = memos.slice(0, -1).reverse();
 
+  useEffect(() => {
+    if (
+      !autoPlayMemoId ||
+      !signedUrls[autoPlayMemoId] ||
+      playedAutoMemoIdRef.current === autoPlayMemoId
+    ) {
+      return;
+    }
+
+    playedAutoMemoIdRef.current = autoPlayMemoId;
+    void autoPlayAudioRef.current?.play().catch(() => undefined);
+  }, [autoPlayMemoId, signedUrls]);
+
   const renderMemo = (memo: IssueVoiceMemo) => {
     const ownMemo = isOwnMemo(
       memo,
@@ -928,6 +988,11 @@ export function IssueVoiceMemoPanel({
             className="mt-2 h-10 w-full"
             controls
             preload="metadata"
+            ref={
+              memo.id === autoPlayMemoId
+                ? autoPlayAudioRef
+                : undefined
+            }
             src={signedUrls[memo.id]}
           >
             Your browser does not support audio playback.

@@ -366,6 +366,36 @@ export function useIssueChat({
     readsByIssue,
     stableIssueIds,
   ]);
+  const latestUnreadByIssue = useMemo(() => {
+    const latest: Record<string, IssueChatMessage> = {};
+
+    stableIssueIds.forEach((issueId) => {
+      const lastReadAt = readsByIssue[issueId]?.last_read_at;
+      const unreadMessages = (messagesByIssue[issueId] ?? []).filter(
+        (message) =>
+          !isOwnMessage(
+            message,
+            readerRole,
+            readerTechnicianName,
+          ) &&
+          (!lastReadAt ||
+            Date.parse(message.created_at) > Date.parse(lastReadAt)),
+      );
+      const latestMessage = unreadMessages.at(-1);
+
+      if (latestMessage) {
+        latest[issueId] = latestMessage;
+      }
+    });
+
+    return latest;
+  }, [
+    messagesByIssue,
+    readerRole,
+    readerTechnicianName,
+    readsByIssue,
+    stableIssueIds,
+  ]);
 
   const openChat = useCallback(
     (issueId: string) => {
@@ -432,6 +462,7 @@ export function useIssueChat({
     closeChat,
     error,
     isSending,
+    latestUnreadByIssue,
     messagesByIssue,
     openChat,
     openIssueId,
@@ -457,7 +488,11 @@ export function IssueChatButton({
           ? `Open issue chat, ${unreadCount} unread`
           : "Open issue chat"
       }
-      className={`relative inline-flex items-center justify-center rounded-md border border-[#3b82f6]/35 bg-[#0b1b35] text-[#bfdbfe] transition hover:border-[#60a5fa] hover:text-white ${
+      className={`relative inline-flex items-center justify-center rounded-md border text-[#bfdbfe] transition hover:text-white ${
+        unreadCount > 0
+          ? "border-[#ef4444]/70 bg-[#7f1d1d] shadow-[0_0_14px_rgba(239,68,68,0.28)] hover:border-[#f87171]"
+          : "border-white/15 bg-[#111827] hover:border-[#60a5fa]"
+      } ${
         compact
           ? "min-h-7 min-w-7 px-1 text-xs"
           : "min-h-9 min-w-9 px-2 text-sm"

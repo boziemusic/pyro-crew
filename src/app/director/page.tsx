@@ -77,6 +77,7 @@ import {
 import {
   playSuccess,
   playDirectorTechJoined,
+  playDirectorUnreadCommunicationAttention,
   playUiClick,
   playWarning,
 } from "@/lib/app-feedback";
@@ -437,6 +438,21 @@ export default function DirectorConsolePage() {
         (issue) => issue.id === directorIssueVoiceMemos.openIssueId,
       ) ?? null
     : null;
+  const directorUnreadCommunicationCount = useMemo(
+    () =>
+      Object.values(directorIssueChat.unreadByIssue).reduce(
+        (total, count) => total + count,
+        0,
+      ) +
+      Object.values(directorIssueVoiceMemos.unreadByIssue).reduce(
+        (total, count) => total + count,
+        0,
+      ),
+    [
+      directorIssueChat.unreadByIssue,
+      directorIssueVoiceMemos.unreadByIssue,
+    ],
+  );
   const [expandedStatuses, setExpandedStatuses] = useState<Set<string>>(
     new Set(),
   );
@@ -492,6 +508,20 @@ export default function DirectorConsolePage() {
   );
   const hasParsedScript = hasScriptEvents;
   const cueIsRange = /^\s*\d+\s*-\s*\d+\s*$/.test(cueValue);
+
+  useEffect(() => {
+    if (directorUnreadCommunicationCount === 0) {
+      return;
+    }
+
+    playDirectorUnreadCommunicationAttention();
+    const intervalId = window.setInterval(
+      playDirectorUnreadCommunicationAttention,
+      5500,
+    );
+
+    return () => window.clearInterval(intervalId);
+  }, [directorUnreadCommunicationCount]);
 
   useEffect(() => {
     if (!technicianContextMenu) {
@@ -1089,6 +1119,23 @@ export default function DirectorConsolePage() {
         const awaitingDirectorCount = activeIssues.filter(({ issue }) =>
           overviewAttentionStatuses.has(issue.status),
         ).length;
+        const hasUnreadCommunication = technicianIssues.some((issue) => {
+          const unreadRecords = [
+            directorIssueChat.latestUnreadByIssue[issue.id],
+            directorIssueVoiceMemos.latestUnreadByIssue[issue.id],
+          ].filter(Boolean);
+
+          return unreadRecords.some((record) => {
+            if (record.sender_technician_name) {
+              return record.sender_technician_name === technician.id;
+            }
+
+            return (
+              technicianAssignments[issue.id] === technician.id ||
+              additionalAssignments[issue.id] === technician.id
+            );
+          });
+        });
 
         return {
           ...technician,
@@ -1096,6 +1143,7 @@ export default function DirectorConsolePage() {
           hasAttention: activeIssues.some(({ issue }) =>
             overviewAttentionStatuses.has(issue.status),
           ),
+          hasUnreadCommunication,
           currentIssue: workingIssues[0] ?? null,
           locationIssue: locationIssue
             ? "issue" in locationIssue
@@ -1132,6 +1180,8 @@ export default function DirectorConsolePage() {
       additionalAssignmentTimes,
       additionalAssignments,
       currentStatusEnteredAt,
+      directorIssueChat.latestUnreadByIssue,
+      directorIssueVoiceMemos.latestUnreadByIssue,
       issues,
       technicianOptions,
       latestHistoricalTechnicianByIssue,
@@ -2253,6 +2303,9 @@ export default function DirectorConsolePage() {
               }
               currentIssue={technician.currentIssue}
               hasAttention={technician.hasAttention}
+              hasUnreadCommunication={
+                technician.hasUnreadCommunication
+              }
               key={technician.id}
               loadCount={technician.activeIssues.length}
               now={timerNow}
@@ -3403,6 +3456,7 @@ function TechOverviewCard({
   chatUnreadCount,
   currentIssue,
   hasAttention,
+  hasUnreadCommunication,
   loadCount,
   now,
   onOpenChat,
@@ -3421,6 +3475,7 @@ function TechOverviewCard({
     assignedAt: string | null;
   } | null;
   hasAttention: boolean;
+  hasUnreadCommunication: boolean;
   loadCount: number;
   now: number | null;
   onOpenChat: () => void;
@@ -3445,7 +3500,13 @@ function TechOverviewCard({
   return (
     <Link
       aria-label={`Open Technician Console as ${technicianName}`}
-      className={`relative block cursor-pointer overflow-hidden rounded-lg border p-3 transition duration-150 hover:brightness-110 hover:shadow-[0_0_18px_rgba(167,139,250,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a78bfa] ${workloadClassName} ${hasAttention ? "tech-overview-attention-wiggle" : ""}`}
+      className={`relative block cursor-pointer overflow-hidden rounded-lg border p-3 transition duration-150 hover:brightness-110 hover:shadow-[0_0_18px_rgba(167,139,250,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a78bfa] ${workloadClassName} ${
+        hasUnreadCommunication
+          ? "tech-overview-unread-communication"
+          : hasAttention
+            ? "tech-overview-attention-wiggle"
+            : ""
+      }`}
       href="/technician"
       onClick={() => setSelectedTemporaryTechnician(technicianId)}
       onContextMenu={(event) => {
@@ -3454,10 +3515,12 @@ function TechOverviewCard({
         onOpenContextMenu(event.clientX, event.clientY);
       }}
     >
-      {hasAttention ? (
+      {hasAttention || hasUnreadCommunication ? (
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 animate-pulse rounded-lg border-2 border-[#ef4444]/70 shadow-[inset_0_0_12px_rgba(239,68,68,0.22)]"
+          className={`pointer-events-none absolute inset-0 rounded-lg border-2 border-[#ef4444]/70 shadow-[inset_0_0_12px_rgba(239,68,68,0.22)] ${
+            hasUnreadCommunication ? "animate-pulse" : ""
+          }`}
         />
       ) : null}
       <div className="flex items-center justify-between gap-3">
@@ -3470,6 +3533,7 @@ function TechOverviewCard({
           </span>
           {currentIssue ? (
             <span
+              className="inline-flex items-center gap-1"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();

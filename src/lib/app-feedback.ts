@@ -437,6 +437,23 @@ export function playVoiceMemoMessage() {
   });
 }
 
+export function playDirectorUnreadCommunicationAttention() {
+  if (!getAppFeedbackSettings().soundsEnabled) {
+    return;
+  }
+
+  void unlockAppFeedback().then((unlocked) => {
+    if (!unlocked) {
+      return;
+    }
+
+    void playGeneratedTone(760, 105, 0.04);
+    window.setTimeout(() => {
+      void playGeneratedTone(880, 120, 0.04);
+    }, 170);
+  });
+}
+
 export function playSuccess() {
   void playSound("Success", soundPaths.success, 720, 120);
 }

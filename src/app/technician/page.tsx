@@ -733,6 +733,20 @@ export default function TechnicianConsolePage() {
             issue.id === technicianIssueVoiceMemos.openIssueId,
         ) ?? null
       : null;
+  const technicianVoiceChatPopupMemo =
+    technicianIssueVoiceMemos.newClosedMemo;
+  const technicianVoiceChatPopupIssue =
+    technicianVoiceChatPopupMemo &&
+    technicianVoiceChatPopupMemo.issue_id !==
+      technicianIssueVoiceMemos.openIssueId
+      ? issues.find(
+          (issue) =>
+            issue.id === technicianVoiceChatPopupMemo.issue_id,
+        ) ?? null
+      : null;
+  const [autoPlayVoiceMemoId, setAutoPlayVoiceMemoId] = useState<
+    string | null
+  >(null);
   const [activeAssignments, setActiveAssignments] = useState<
     IssueAssignment[]
   >([]);
@@ -3200,8 +3214,70 @@ export default function TechnicianConsolePage() {
           }}
         />
       ) : null}
+      {technicianVoiceChatPopupMemo &&
+      technicianVoiceChatPopupIssue ? (
+        <div
+          aria-labelledby="technician-new-voice-chat-title"
+          aria-modal="true"
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-black/82 p-5 backdrop-blur-sm"
+          role="dialog"
+        >
+          <section className="w-full max-w-md rounded-xl border border-[#f59e0b]/50 bg-[#0b1020] p-6 shadow-2xl shadow-black/70">
+            <p
+              className="text-sm font-bold uppercase tracking-[0.16em] text-[#fbbf24]"
+              id="technician-new-voice-chat-title"
+            >
+              New Voice Chat
+            </p>
+            <p className="mt-4 text-base font-semibold leading-7 text-white">
+              A new voice message was sent for CH{" "}
+              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+                {technicianVoiceChatPopupIssue.channel_number}
+              </strong>
+              <span className="text-[#94a3b8]"> | </span>
+              Cue(s){" "}
+              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+                {technicianVoiceChatPopupIssue.cue_value}
+              </strong>{" "}
+              at{" "}
+              <strong className="font-bold text-[#4ade80]">
+                {technicianVoiceChatPopupIssue.position_name ?? "—"}
+              </strong>
+              .
+            </p>
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
+              <button
+                className="min-h-12 rounded-lg border border-white/15 bg-[#111827] px-4 py-3 text-sm font-bold text-[#dbe4ef]"
+                onClick={
+                  technicianIssueVoiceMemos.clearNewClosedMemo
+                }
+                type="button"
+              >
+                Dismiss
+              </button>
+              <button
+                autoFocus
+                className="min-h-12 rounded-lg bg-[#b45309] px-4 py-3 text-sm font-bold text-white transition hover:bg-[#d97706]"
+                onClick={() => {
+                  setAutoPlayVoiceMemoId(
+                    technicianVoiceChatPopupMemo.id,
+                  );
+                  technicianIssueVoiceMemos.clearNewClosedMemo();
+                  technicianIssueVoiceMemos.openPanel(
+                    technicianVoiceChatPopupIssue.id,
+                  );
+                }}
+                type="button"
+              >
+                Play Message
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {technicianVoiceMemoTarget ? (
         <IssueVoiceMemoPanel
+          autoPlayMemoId={autoPlayVoiceMemoId}
           error={technicianIssueVoiceMemos.error}
           isUploading={technicianIssueVoiceMemos.isUploading}
           memos={
@@ -3209,7 +3285,10 @@ export default function TechnicianConsolePage() {
               technicianVoiceMemoTarget.id
             ] ?? []
           }
-          onClose={technicianIssueVoiceMemos.closePanel}
+          onClose={() => {
+            setAutoPlayVoiceMemoId(null);
+            technicianIssueVoiceMemos.closePanel();
+          }}
           onUpload={(blob, durationMs, mimeType) =>
             technicianIssueVoiceMemos.uploadMemo(
               technicianVoiceMemoTarget.id,
