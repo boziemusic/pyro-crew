@@ -1563,7 +1563,7 @@ export default function DirectorConsolePage() {
 
     if (voiceMemoCleanupError) {
       setSessionSummaryError(
-        `Continuity session ended, but temporary voice memos could not be cleared: ${voiceMemoCleanupError.message}`,
+        `Continuity session ended, but temporary voice chat could not be cleared: ${voiceMemoCleanupError.message}`,
       );
       setIsLoadingSessionSummary(false);
       return;
@@ -1811,7 +1811,7 @@ export default function DirectorConsolePage() {
 
     if (voiceMemoCleanupError) {
       setSessionMessage(
-        `Continuity session ended, but temporary voice memos could not be cleared: ${voiceMemoCleanupError.message}`,
+        `Continuity session ended, but temporary voice chat could not be cleared: ${voiceMemoCleanupError.message}`,
       );
       setIsEndingSession(false);
       return;

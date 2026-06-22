@@ -543,7 +543,7 @@ export function DirectorAttentionQueue({
 
       if (voiceMemoCleanupError) {
         setHistoryWarning(
-          `Issue updated, but temporary voice memos could not be cleared: ${voiceMemoCleanupError.message}`,
+          `Issue updated, but temporary voice chat could not be cleared: ${voiceMemoCleanupError.message}`,
         );
       }
     }

@@ -223,7 +223,7 @@ export function useIssueVoiceMemos({
 
       if (readError) {
         setError(
-          `Could not update voice memo read state: ${readError.message}`,
+          `Could not update voice chat read state: ${readError.message}`,
         );
         markingReadIssueIdsRef.current.delete(issueId);
         return;
@@ -253,7 +253,7 @@ export function useIssueVoiceMemos({
 
       if (result.error) {
         setError(
-          `Could not update voice memo read state: ${result.error.message}`,
+          `Could not update voice chat read state: ${result.error.message}`,
         );
         markingReadIssueIdsRef.current.delete(issueId);
         return;
@@ -328,7 +328,7 @@ export function useIssueVoiceMemos({
     const queryError = memosResult.error ?? readsResult.error;
 
     if (queryError) {
-      setError(`Could not load voice memos: ${queryError.message}`);
+      setError(`Could not load voice chat: ${queryError.message}`);
       return;
     }
 
@@ -454,7 +454,7 @@ export function useIssueVoiceMemos({
       const failedResult = results.find(({ result }) => result.error);
       if (failedResult?.result.error) {
         setError(
-          `Could not load voice memo audio: ${failedResult.result.error.message}`,
+          `Could not load voice chat audio: ${failedResult.result.error.message}`,
         );
         return;
       }
@@ -530,7 +530,7 @@ export function useIssueVoiceMemos({
       }
 
       if (blob.size > MAX_FILE_SIZE_BYTES) {
-        setError("Voice memo exceeds the 2 MB upload limit.");
+        setError("Voice chat recording exceeds the 2 MB upload limit.");
         return false;
       }
 
@@ -550,7 +550,7 @@ export function useIssueVoiceMemos({
 
       if (uploadResult.error) {
         setError(
-          `Could not upload voice memo: ${uploadResult.error.message}`,
+          `Could not upload voice chat recording: ${uploadResult.error.message}`,
         );
         setIsUploading(false);
         return false;
@@ -582,7 +582,7 @@ export function useIssueVoiceMemos({
           .from(VOICE_MEMO_BUCKET)
           .remove([storagePath]);
         setError(
-          `Voice memo uploaded, but metadata could not be saved: ${metadataResult.error.message}`,
+          `Voice chat recording uploaded, but metadata could not be saved: ${metadataResult.error.message}`,
         );
         setIsUploading(false);
         return false;
@@ -629,8 +629,8 @@ export function IssueVoiceMemoButton({
     <button
       aria-label={
         unreadCount > 0
-          ? `Open voice memos, ${unreadCount} unread`
-          : "Open voice memos"
+          ? `Open voice chat, ${unreadCount} unread`
+          : "Open voice chat"
       }
       className={`relative inline-flex items-center justify-center rounded-md border border-[#f59e0b]/40 bg-[#2a1c06] text-[#fde68a] transition hover:border-[#fbbf24] hover:text-white ${
         compact
@@ -638,7 +638,7 @@ export function IssueVoiceMemoButton({
           : "min-h-9 min-w-9 px-2 text-sm"
       }`}
       onClick={onClick}
-      title="Issue voice memos"
+      title="Issue voice chat"
       type="button"
     >
       <span aria-hidden="true">🎙️</span>
@@ -680,19 +680,16 @@ export function IssueVoiceMemoPanel({
     "idle" | "requesting" | "recording"
   >("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [recordingError, setRecordingError] = useState<string | null>(
     null,
   );
-  const [pendingRecording, setPendingRecording] = useState<{
-    blob: Blob;
-    durationMs: number;
-    mimeType: string;
-    previewUrl: string;
-  } | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recordingStartedAtRef = useRef(0);
+  const pointerHeldRef = useRef(false);
+  const shouldSendRecordingRef = useRef(false);
   const stopTimeoutRef = useRef<number | null>(null);
   const elapsedIntervalRef = useRef<number | null>(null);
 
@@ -714,6 +711,8 @@ export function IssueVoiceMemoPanel({
 
   useEffect(
     () => () => {
+      pointerHeldRef.current = false;
+      shouldSendRecordingRef.current = false;
       clearRecordingTimers();
       if (recorderRef.current?.state === "recording") {
         recorderRef.current.stop();
@@ -721,15 +720,6 @@ export function IssueVoiceMemoPanel({
       releaseStream();
     },
     [clearRecordingTimers, releaseStream],
-  );
-
-  useEffect(
-    () => () => {
-      if (pendingRecording?.previewUrl) {
-        URL.revokeObjectURL(pendingRecording.previewUrl);
-      }
-    },
-    [pendingRecording],
   );
 
   const stopRecording = useCallback(() => {
@@ -757,6 +747,13 @@ export function IssueVoiceMemoPanel({
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
       });
+
+      if (!pointerHeldRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        setRecordingState("idle");
+        return;
+      }
+
       const mimeType = getSupportedRecordingMimeType();
       const recorder = mimeType
         ? new MediaRecorder(stream, {
@@ -779,12 +776,13 @@ export function IssueVoiceMemoPanel({
         }
       });
       recorder.addEventListener("error", () => {
+        shouldSendRecordingRef.current = false;
         clearRecordingTimers();
         releaseStream();
         setRecordingState("idle");
         setRecordingError("Recording stopped because of a microphone error.");
       });
-      recorder.addEventListener("stop", () => {
+      recorder.addEventListener("stop", async () => {
         clearRecordingTimers();
         const durationMs = Math.min(
           MAX_RECORDING_MS,
@@ -804,6 +802,17 @@ export function IssueVoiceMemoPanel({
         setRecordingState("idle");
         setElapsedMs(durationMs);
 
+        if (!shouldSendRecordingRef.current) {
+          shouldSendRecordingRef.current = false;
+          return;
+        }
+        shouldSendRecordingRef.current = false;
+
+        if (durationMs < 300) {
+          setRecordingError("Recording too short.");
+          return;
+        }
+
         if (blob.size === 0) {
           setRecordingError(
             "The recording was empty. Please try again.",
@@ -811,19 +820,11 @@ export function IssueVoiceMemoPanel({
           return;
         }
 
-        setPendingRecording((current) => {
-          if (current?.previewUrl) {
-            URL.revokeObjectURL(current.previewUrl);
-          }
-          return {
-            blob,
-            durationMs,
-            mimeType: actualMimeType,
-            previewUrl: URL.createObjectURL(blob),
-          };
-        });
+        await onUpload(blob, durationMs, actualMimeType);
+        setElapsedMs(0);
       });
 
+      shouldSendRecordingRef.current = true;
       recorder.start(1000);
       setRecordingState("recording");
       elapsedIntervalRef.current = window.setInterval(() => {
@@ -839,6 +840,8 @@ export function IssueVoiceMemoPanel({
         MAX_RECORDING_MS,
       );
     } catch (recordError) {
+      pointerHeldRef.current = false;
+      shouldSendRecordingRef.current = false;
       clearRecordingTimers();
       releaseStream();
       setRecordingState("idle");
@@ -851,47 +854,146 @@ export function IssueVoiceMemoPanel({
     }
   };
 
-  const discardPendingRecording = () => {
-    if (pendingRecording?.previewUrl) {
-      URL.revokeObjectURL(pendingRecording.previewUrl);
-    }
-    setPendingRecording(null);
-    setElapsedMs(0);
-    setRecordingError(null);
-  };
-
-  const sendPendingRecording = async () => {
-    if (!pendingRecording) {
+  const handlePointerDown = (
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    if (recordingState !== "idle" || isUploading) {
       return;
     }
 
-    const wasUploaded = await onUpload(
-      pendingRecording.blob,
-      pendingRecording.durationMs,
-      pendingRecording.mimeType,
-    );
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointerHeldRef.current = true;
+    void startRecording();
+  };
 
-    if (wasUploaded) {
-      discardPendingRecording();
+  const handlePointerRelease = (
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    pointerHeldRef.current = false;
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    if (recordingState === "recording") {
+      stopRecording();
+    }
+  };
+
+  const handleClose = () => {
+    pointerHeldRef.current = false;
+    shouldSendRecordingRef.current = false;
+    stopRecording();
+    onClose();
+  };
+
+  const latestMemo = memos.at(-1) ?? null;
+  const historyMemos = memos.slice(0, -1).reverse();
+
+  const renderMemo = (memo: IssueVoiceMemo) => {
+    const ownMemo = isOwnMemo(
+      memo,
+      readerRole,
+      readerTechnicianName,
+    );
+    const senderLabel =
+      memo.sender_role === "director"
+        ? "Director"
+        : getTemporaryTechnicianLabel(
+            memo.sender_technician_name ?? undefined,
+          );
+
+    return (
+      <div
+        className={`rounded-lg border px-3 py-3 ${
+          ownMemo
+            ? "border-[#f59e0b]/40 bg-[#2a1c06]"
+            : "border-white/10 bg-[#111827]"
+        }`}
+        key={memo.id}
+      >
+        <div className="flex items-center justify-between gap-3 text-[10px] font-semibold uppercase tracking-[0.1em]">
+          <span className={ownMemo ? "text-[#fde68a]" : "text-[#93c5fd]"}>
+            {senderLabel}
+          </span>
+          <span className="text-[#64748b]">
+            {formatDuration(memo.duration_ms)} ·{" "}
+            {formatMemoTime(memo.created_at)}
+          </span>
+        </div>
+        {signedUrls[memo.id] ? (
+          <audio
+            className="mt-2 h-10 w-full"
+            controls
+            preload="metadata"
+            src={signedUrls[memo.id]}
+          >
+            Your browser does not support audio playback.
+          </audio>
+        ) : (
+          <p className="mt-2 text-xs text-[#94a3b8]">
+            Loading audio…
+          </p>
+        )}
+      </div>
+    );
+  };
+
+  const handleContextMenu = (
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) => {
+    if (recordingState !== "idle") {
+      event.preventDefault();
+    }
+  };
+
+  const handleKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+  ) => {
+    if (
+      !event.repeat &&
+      (event.key === " " || event.key === "Enter") &&
+      recordingState === "idle" &&
+      !isUploading
+    ) {
+      event.preventDefault();
+      pointerHeldRef.current = true;
+      void startRecording();
+    }
+  };
+
+  const handleKeyUp = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+  ) => {
+    if (event.key !== " " && event.key !== "Enter") {
+      return;
+    }
+
+    event.preventDefault();
+    pointerHeldRef.current = false;
+    if (recordingState === "recording") {
+      stopRecording();
     }
   };
 
   return (
     <div
-      aria-labelledby="issue-voice-memos-title"
+      aria-labelledby="issue-voice-chat-title"
       aria-modal="true"
-      className="fixed inset-0 z-[80] flex items-end justify-center bg-black/65 p-3 sm:items-center sm:p-5"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-3 sm:p-5"
       role="dialog"
     >
-      <section className="flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-xl border border-[#f59e0b]/40 bg-[#0b1020] shadow-2xl shadow-black/70">
+      <section className="flex max-h-[88dvh] w-full max-w-md flex-col overflow-hidden rounded-xl border border-[#f59e0b]/40 bg-[#0b1020] shadow-2xl shadow-black/70">
         <header className="flex items-start justify-between gap-3 border-b border-white/10 px-4 py-3">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#fbbf24]">
-              Voice Memos
+              Voice Chat
             </p>
             <h2
               className="mt-1 text-sm font-semibold text-white"
-              id="issue-voice-memos-title"
+              id="issue-voice-chat-title"
             >
               CH {target.channelNumber} | Cue(s) {target.cueValue}
             </h2>
@@ -900,149 +1002,88 @@ export function IssueVoiceMemoPanel({
             </p>
           </div>
           <button
-            aria-label="Close issue voice memos"
+            aria-label="Close issue voice chat"
             className="rounded-md border border-white/15 px-3 py-2 text-sm font-semibold text-[#cbd5e1]"
-            onClick={onClose}
+            onClick={handleClose}
             type="button"
           >
             Close
           </button>
         </header>
 
-        <div className="min-h-44 flex-1 space-y-3 overflow-y-auto px-4 py-4">
-          {memos.length === 0 ? (
+        <div className="min-h-36 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+          {!latestMemo ? (
             <p className="rounded-lg border border-dashed border-white/15 p-4 text-center text-sm text-[#94a3b8]">
-              No voice memos yet.
+              No voice chat yet.
             </p>
           ) : (
-            memos.map((memo) => {
-              const ownMemo = isOwnMemo(
-                memo,
-                readerRole,
-                readerTechnicianName,
-              );
-              const senderLabel =
-                memo.sender_role === "director"
-                  ? "Director"
-                  : getTemporaryTechnicianLabel(
-                      memo.sender_technician_name ?? undefined,
-                    );
-
-              return (
-                <div
-                  className={`flex ${ownMemo ? "justify-end" : "justify-start"}`}
-                  key={memo.id}
-                >
-                  <div
-                    className={`w-[88%] rounded-lg border px-3 py-2 ${
-                      ownMemo
-                        ? "border-[#f59e0b]/40 bg-[#2a1c06]"
-                        : "border-white/10 bg-[#111827]"
-                    }`}
+            <>
+              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#94a3b8]">
+                Latest
+              </p>
+              {renderMemo(latestMemo)}
+              {historyMemos.length > 0 ? (
+                <div className="pt-1 text-center">
+                  <button
+                    className="text-xs italic text-[#c4b5fd] underline decoration-[#8b5cf6]/50 underline-offset-4 transition hover:text-white"
+                    onClick={() => setIsHistoryOpen((current) => !current)}
+                    type="button"
                   >
-                    <div className="flex items-center justify-between gap-3 text-[10px] font-semibold uppercase tracking-[0.1em]">
-                      <span
-                        className={
-                          ownMemo
-                            ? "text-[#fde68a]"
-                            : "text-[#93c5fd]"
-                        }
-                      >
-                        {senderLabel}
-                      </span>
-                      <span className="text-[#64748b]">
-                        {formatDuration(memo.duration_ms)} ·{" "}
-                        {formatMemoTime(memo.created_at)}
-                      </span>
-                    </div>
-                    {signedUrls[memo.id] ? (
-                      <audio
-                        className="mt-2 h-10 w-full"
-                        controls
-                        preload="metadata"
-                        src={signedUrls[memo.id]}
-                      >
-                        Your browser does not support audio playback.
-                      </audio>
-                    ) : (
-                      <p className="mt-2 text-xs text-[#94a3b8]">
-                        Loading audio…
-                      </p>
-                    )}
-                  </div>
+                    {isHistoryOpen
+                      ? "Hide chat history"
+                      : "Listen to chat history"}
+                  </button>
                 </div>
-              );
-            })
+              ) : null}
+              {isHistoryOpen ? (
+                <div className="space-y-3 border-t border-white/10 pt-3">
+                  {historyMemos.map(renderMemo)}
+                </div>
+              ) : null}
+            </>
           )}
         </div>
 
-        <div className="border-t border-white/10 p-3">
-          {pendingRecording ? (
-            <div className="rounded-lg border border-[#f59e0b]/35 bg-[#2a1c06]/70 p-3">
-              <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#fde68a]">
-                Review Recording ·{" "}
-                {formatDuration(pendingRecording.durationMs)}
-              </p>
-              <audio
-                className="mt-2 h-10 w-full"
-                controls
-                src={pendingRecording.previewUrl}
-              />
-              <div className="mt-3 flex gap-2">
-                <button
-                  className="flex-1 rounded-md bg-[#b45309] px-3 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={isUploading}
-                  onClick={() => void sendPendingRecording()}
-                  type="button"
-                >
-                  {isUploading ? "Sending…" : "Send Voice Memo"}
-                </button>
-                <button
-                  className="rounded-md border border-white/15 px-3 py-2 text-sm font-semibold text-[#cbd5e1] disabled:opacity-50"
-                  disabled={isUploading}
-                  onClick={discardPendingRecording}
-                  type="button"
-                >
-                  Discard
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold text-[#dbe4ef]">
-                  {recordingState === "recording"
-                    ? `Recording… ${formatDuration(elapsedMs)} / 20s`
-                    : recordingState === "requesting"
-                      ? "Requesting microphone…"
-                      : "Record a memo up to 20 seconds"}
-                </p>
-                <p className="mt-1 text-[11px] text-[#64748b]">
-                  Director, primary tech, and helpers
-                </p>
-              </div>
-              {recordingState === "recording" ? (
-                <button
-                  className="min-h-11 rounded-md bg-[#b91c1c] px-4 py-2 text-sm font-bold text-white"
-                  onClick={stopRecording}
-                  type="button"
-                >
-                  Stop
-                </button>
-              ) : (
-                <button
-                  className="min-h-11 rounded-md bg-[#b45309] px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={recordingState === "requesting"}
-                  onClick={() => void startRecording()}
-                  type="button"
-                >
-                  🎙️ Record
-                </button>
-              )}
-            </div>
-          )}
+        <div className="border-t border-white/10 p-4">
+          <div className="flex flex-col items-center">
+            <button
+              aria-label="Hold to record voice chat"
+              className={`flex h-32 w-32 touch-none select-none flex-col items-center justify-center rounded-full border-4 text-center font-bold text-white shadow-xl transition ${
+                recordingState === "recording"
+                  ? "scale-105 border-[#fecaca] bg-[#dc2626] shadow-[0_0_28px_rgba(239,68,68,0.55)]"
+                  : "border-[#991b1b] bg-[#b91c1c] shadow-black/40 hover:bg-[#dc2626]"
+              } disabled:cursor-not-allowed disabled:opacity-55`}
+              disabled={isUploading}
+              onContextMenu={handleContextMenu}
+              onKeyDown={handleKeyDown}
+              onKeyUp={handleKeyUp}
+              onPointerCancel={handlePointerRelease}
+              onPointerDown={handlePointerDown}
+              onPointerUp={handlePointerRelease}
+              type="button"
+            >
+              <span aria-hidden="true" className="text-2xl">🎙️</span>
+              <span className="mt-1 text-sm">
+                {isUploading
+                  ? "Sending…"
+                  : recordingState === "requesting"
+                    ? "Getting Mic…"
+                    : recordingState === "recording"
+                      ? "Release to Send"
+                      : "Hold to Record"}
+              </span>
+            </button>
+            <p className="mt-3 text-xs font-semibold text-[#dbe4ef]">
+              {recordingState === "recording"
+                ? `${formatDuration(elapsedMs)} / 20s`
+                : "Release to send automatically"}
+            </p>
+            <p className="mt-1 text-[11px] text-[#64748b]">
+              Director, primary tech, and helpers
+            </p>
+          </div>
           {recordingError || error ? (
-            <p className="mt-2 text-xs font-semibold text-[#fecaca]">
+            <p className="mt-3 text-center text-xs font-semibold text-[#fecaca]">
               {recordingError ?? error}
             </p>
           ) : null}
