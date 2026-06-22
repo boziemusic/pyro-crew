@@ -34,8 +34,6 @@ import {
   isValidTechnicianDisplayName,
   normalizeTechnicianDisplayName,
   setSelectedTemporaryTechnician,
-  type TemporaryTechnicianId,
-  useSelectedTemporaryTechnician,
 } from "@/components/temporary-technician-store";
 import { recordJoinedTechnician } from "@/components/collaboration-store";
 import {
@@ -81,6 +79,11 @@ type ContinuitySessionRecord = ActiveContinuitySession & {
 type ScriptEventPreview = {
   count: number;
   rows: ScriptEventRow[];
+};
+
+type VerifiedTechnicianJoin = {
+  session: ActiveContinuitySession;
+  show: ShowRecord;
 };
 
 const fieldClassName =
@@ -203,9 +206,8 @@ export function ShowsWorkspace() {
           <MobileTechnicianEntry
             isEntering={false}
             message={null}
-            onContinue={() => undefined}
-            onSelectTechnician={() => undefined}
-            selectedTechnician="tech_1"
+            onCompleteJoin={async () => false}
+            onVerifyCode={async () => false}
             supabaseConfigured={false}
           />
         ) : (
@@ -233,12 +235,13 @@ function ConfiguredShowsWorkspace() {
     getServerActiveShowSnapshot,
   );
   const activeSession = useActiveContinuitySession();
-  const selectedTechnician = useSelectedTemporaryTechnician();
   const [isEnteringTechnicianConsole, setIsEnteringTechnicianConsole] =
     useState(false);
   const [mobileEntryMessage, setMobileEntryMessage] = useState<string | null>(
     null,
   );
+  const [verifiedTechnicianJoin, setVerifiedTechnicianJoin] =
+    useState<VerifiedTechnicianJoin | null>(null);
   const [name, setName] = useState("");
   const [showMode, setShowMode] = useState<ShowMode>("scripted");
   const [showDate, setShowDate] = useState("");
@@ -998,26 +1001,16 @@ function ConfiguredShowsWorkspace() {
     setIsStartingSession(false);
   };
 
-  const continueToTechnicianConsole = async (showCode: string) => {
+  const verifyTechnicianShowCode = async (showCode: string) => {
     const normalizedShowCode = normalizeJoinCode(showCode);
-    const normalizedTechnicianName =
-      normalizeTechnicianDisplayName(selectedTechnician);
 
     if (!/^[A-Z0-9]{4}$/.test(normalizedShowCode)) {
       setMobileEntryMessage("Enter a 4-character show code.");
-      return;
-    }
-
-    if (!isValidTechnicianDisplayName(normalizedTechnicianName)) {
-      setMobileEntryMessage(
-        "Enter a 2-24 character name using letters, numbers, spaces, hyphen, or apostrophe.",
-      );
-      return;
+      return null;
     }
 
     setIsEnteringTechnicianConsole(true);
     setMobileEntryMessage(null);
-    setSelectedTemporaryTechnician(normalizedTechnicianName);
 
     try {
       const { data: matchedShow, error: showError } = await supabase
@@ -1031,16 +1024,15 @@ function ConfiguredShowsWorkspace() {
       if (showError) {
         const errorMessage = `Could not look up show: ${showError.message}`;
         setMobileEntryMessage(errorMessage);
-        return;
+        return null;
       }
 
       if (!matchedShow) {
         setMobileEntryMessage("No show found for that code.");
-        return;
+        return null;
       }
 
       const show = matchedShow as ShowRecord;
-      activateShow(show);
 
       const { data: session, error: sessionError } = await supabase
         .from("continuity_sessions")
@@ -1057,7 +1049,7 @@ function ConfiguredShowsWorkspace() {
         setMobileEntryMessage(
           `Could not check the active continuity session: ${sessionError.message}`,
         );
-        return;
+        return null;
       }
 
       if (!session) {
@@ -1065,22 +1057,57 @@ function ConfiguredShowsWorkspace() {
         setMobileEntryMessage(
           "Show found, but no active continuity session. Ask the Director to start one.",
         );
-        return;
+        return null;
       }
 
-      setActiveContinuitySession(session as ActiveContinuitySession);
-      setSelectedTemporaryTechnician(normalizedTechnicianName);
-      await recordJoinedTechnician({
-        sessionId: (session as ActiveContinuitySession).id,
-        showId: show.id,
-        technicianId: normalizedTechnicianName,
-      });
-      playTechnicianJoined();
-      router.push("/technician");
+      const verified = {
+        session: session as ActiveContinuitySession,
+        show,
+      };
+      setVerifiedTechnicianJoin(verified);
+      return verified;
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown join error.";
       setMobileEntryMessage(`Could not join show: ${errorMessage}`);
+      return null;
+    } finally {
+      setIsEnteringTechnicianConsole(false);
+    }
+  };
+
+  const completeTechnicianJoin = async (technicianName: string) => {
+    if (!verifiedTechnicianJoin) {
+      setMobileEntryMessage("Verify the show code before entering your name.");
+      return false;
+    }
+
+    const normalizedTechnicianName =
+      normalizeTechnicianDisplayName(technicianName);
+    if (!isValidTechnicianDisplayName(normalizedTechnicianName)) {
+      return false;
+    }
+
+    setIsEnteringTechnicianConsole(true);
+    setMobileEntryMessage(null);
+
+    try {
+      activateShow(verifiedTechnicianJoin.show);
+      setActiveContinuitySession(verifiedTechnicianJoin.session);
+      setSelectedTemporaryTechnician(normalizedTechnicianName);
+      await recordJoinedTechnician({
+        sessionId: verifiedTechnicianJoin.session.id,
+        showId: verifiedTechnicianJoin.show.id,
+        technicianId: normalizedTechnicianName,
+      });
+      playTechnicianJoined();
+      router.push("/technician");
+      return true;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown join error.";
+      setMobileEntryMessage(`Could not join show: ${errorMessage}`);
+      return false;
     } finally {
       setIsEnteringTechnicianConsole(false);
     }
@@ -1091,14 +1118,11 @@ function ConfiguredShowsWorkspace() {
       <MobileTechnicianEntry
         isEntering={isEnteringTechnicianConsole}
         message={mobileEntryMessage}
-        onContinue={(showCode) =>
-          void continueToTechnicianConsole(showCode)
-        }
-        onSelectTechnician={(technicianId) => {
-          setSelectedTemporaryTechnician(technicianId);
+        onCompleteJoin={completeTechnicianJoin}
+        onVerifyCode={async (showCode) => {
           setMobileEntryMessage(null);
+          return Boolean(await verifyTechnicianShowCode(showCode));
         }}
-        selectedTechnician={selectedTechnician}
         supabaseConfigured={isSupabaseConfigured}
       />
     );
@@ -1793,58 +1817,81 @@ function ConfiguredShowsWorkspace() {
 function MobileTechnicianEntry({
   isEntering,
   message,
-  onContinue,
-  onSelectTechnician,
-  selectedTechnician,
+  onCompleteJoin,
+  onVerifyCode,
   supabaseConfigured,
 }: {
   isEntering: boolean;
   message: string | null;
-  onContinue: (showCode: string) => void;
-  onSelectTechnician: (technicianId: TemporaryTechnicianId) => void;
-  selectedTechnician: TemporaryTechnicianId;
+  onCompleteJoin: (technicianName: string) => Promise<boolean>;
+  onVerifyCode: (showCode: string) => Promise<boolean>;
   supabaseConfigured: boolean;
 }) {
   const [joinCode, setJoinCode] = useState("");
-  const [technicianName, setTechnicianName] = useState(
-    selectedTechnician.startsWith("tech_") ? "" : selectedTechnician,
-  );
+  const [technicianName, setTechnicianName] = useState("");
+  const [nameValidation, setNameValidation] = useState<string | null>(null);
+  const [isNameModalOpen, setIsNameModalOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [scannerError, setScannerError] = useState<string | null>(null);
   const normalizedJoinCode = normalizeJoinCode(joinCode);
-  const normalizedTechnicianName =
-    normalizeTechnicianDisplayName(technicianName);
-  const hasValidTechnicianName = isValidTechnicianDisplayName(
-    normalizedTechnicianName,
-  );
-  const isJoinEnabled =
-    joinCode.length === 4 && hasValidTechnicianName && !isEntering;
+  const isJoinEnabled = joinCode.length === 4 && !isEntering;
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      const code = new URLSearchParams(window.location.search).get("code");
+      if (code) {
+        setJoinCode(normalizeJoinCode(code));
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  const verifyCode = async () => {
+    setScannerError(null);
+    if (await onVerifyCode(normalizedJoinCode)) {
+      setTechnicianName("");
+      setNameValidation(null);
+      setIsNameModalOpen(true);
+    }
+  };
+
+  const completeJoin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalizedName =
+      normalizeTechnicianDisplayName(technicianName);
+
+    if (!isValidTechnicianDisplayName(normalizedName)) {
+      setNameValidation(
+        "Enter 2–24 characters using letters, numbers, spaces, hyphen, or apostrophe.",
+      );
+      return;
+    }
+
+    if (await onCompleteJoin(normalizedName)) {
+      setIsNameModalOpen(false);
+    }
+  };
 
   return (
-    <div className="mx-auto flex w-full max-w-lg flex-col gap-5 px-4 py-5">
+    <div className="mx-auto flex min-h-[100dvh] w-full max-w-lg flex-col justify-center gap-5 px-4 py-5">
       <section className="rounded-xl border border-[#8b5cf6]/35 bg-[#0b1020]/95 p-5 shadow-2xl shadow-black/30">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#a78bfa]">
           Technician Entry
         </p>
         <h1 className="mt-3 text-3xl font-semibold text-white">
-          Join field operations
+          Technician Login
         </h1>
         <p className="mt-3 text-sm leading-6 text-[#b6c3d1]">
-          Enter the show code and your field display name. Show setup and
-          session creation remain Director workflows on a desktop or laptop.
+          Enter the show code from your director below
         </p>
       </section>
 
       <section className="rounded-xl border border-white/10 bg-[#0b1020]/95 p-4 shadow-xl shadow-black/20">
         <div className="flex min-h-11 items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#94a3b8]">
-              Step 1
-            </p>
-            <h2 className="mt-1 text-lg font-semibold text-white">
-              Enter Show Code
-            </h2>
-          </div>
+          <h2 className="text-lg font-semibold text-white">
+            Enter Show Code
+          </h2>
           <button
             aria-label="Scan show code QR"
             className="flex h-11 w-11 touch-manipulation items-center justify-center rounded-lg border border-[#8b5cf6]/35 bg-[#17102c] text-[#d8c8ff] active:bg-[#251447]"
@@ -1879,9 +1926,10 @@ function MobileTechnicianEntry({
           className="mt-4 min-h-16 w-full touch-manipulation rounded-xl border border-white/15 bg-[#070b18] px-4 py-3 text-center font-mono text-3xl font-bold uppercase tracking-[0.25em] text-white outline-none focus:border-[#8b5cf6] focus:ring-2 focus:ring-[#4c00a4]/40"
           inputMode="text"
           maxLength={4}
-          onChange={(event) =>
-            setJoinCode(normalizeJoinCode(event.currentTarget.value))
-          }
+          onChange={(event) => {
+            setJoinCode(normalizeJoinCode(event.currentTarget.value));
+            setScannerError(null);
+          }}
           placeholder="AB12"
           spellCheck={false}
           type="text"
@@ -1895,52 +1943,23 @@ function MobileTechnicianEntry({
             {scannerError}
           </p>
         ) : null}
-      </section>
-
-      <section className="rounded-xl border border-white/10 bg-[#0b1020]/95 p-4 shadow-xl shadow-black/20">
-        <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#94a3b8]">
-          Step 2
-        </p>
-        <h2 className="mt-1 text-lg font-semibold text-white">
-          Enter Your Name
-        </h2>
-        <input
-          aria-label="Enter Your Name"
-          autoCapitalize="words"
-          autoComplete="name"
-          className="mt-4 min-h-14 w-full touch-manipulation rounded-xl border border-white/15 bg-[#070b18] px-4 py-3 text-base font-semibold text-white outline-none focus:border-[#8b5cf6] focus:ring-2 focus:ring-[#4c00a4]/40"
-          maxLength={24}
-          onChange={(event) => {
-            setTechnicianName(event.currentTarget.value);
-            onSelectTechnician(event.currentTarget.value);
-          }}
-          placeholder="Bo Domescik"
-          type="text"
-          value={technicianName}
-        />
-        <p className="mt-2 text-xs leading-5 text-[#94a3b8]">
-          2-24 characters. Letters, numbers, spaces, hyphen, and apostrophe
-          are allowed.
-        </p>
-      </section>
-
-      {message ? (
-        <p
-          aria-live="polite"
-          className="rounded-xl border border-[#f59e0b]/40 bg-[#2a1c06] p-4 text-sm font-semibold leading-6 text-[#fde68a]"
+        {message ? (
+          <p
+            aria-live="polite"
+            className="mt-3 rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-xs font-semibold leading-5 text-[#fde68a]"
+          >
+            {message}
+          </p>
+        ) : null}
+        <button
+          className="mt-4 min-h-14 w-full touch-manipulation rounded-xl bg-[#6d28d9] px-5 py-4 text-lg font-bold text-white shadow-xl shadow-[#4c00a4]/30 transition active:scale-[0.99] active:bg-[#7c3aed] disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={!isJoinEnabled}
+          onClick={() => void verifyCode()}
+          type="button"
         >
-          {message}
-        </p>
-      ) : null}
-
-      <button
-        className="min-h-14 touch-manipulation rounded-xl bg-[#6d28d9] px-5 py-4 text-lg font-bold text-white shadow-xl shadow-[#4c00a4]/30 transition active:scale-[0.99] active:bg-[#7c3aed] disabled:cursor-not-allowed disabled:opacity-50"
-        disabled={!isJoinEnabled}
-        onClick={() => onContinue(normalizedJoinCode)}
-        type="button"
-      >
-        {isEntering ? "Joining..." : "Join Technician Console"}
-      </button>
+          {isEntering ? "Checking..." : "Join Show"}
+        </button>
+      </section>
 
       {!supabaseConfigured ? (
         <p className="text-center text-sm font-semibold text-[#fecaca]">
@@ -1958,6 +1977,58 @@ function MobileTechnicianEntry({
           }}
           onScanError={setScannerError}
         />
+      ) : null}
+      {isNameModalOpen ? (
+        <div
+          aria-labelledby="technician-name-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-5 backdrop-blur-sm"
+          role="dialog"
+        >
+          <form
+            className="w-full max-w-md rounded-xl border border-[#8b5cf6]/45 bg-[#0b1020] p-5 shadow-2xl shadow-black/70"
+            onSubmit={completeJoin}
+          >
+            <h2
+              className="text-2xl font-bold text-white"
+              id="technician-name-title"
+            >
+              Enter Your Name
+            </h2>
+            <input
+              aria-label="Technician name"
+              autoCapitalize="words"
+              autoComplete="name"
+              autoFocus
+              className="mt-5 min-h-14 w-full rounded-xl border border-white/15 bg-[#070b18] px-4 py-3 text-base font-semibold text-white outline-none placeholder:text-[#64748b] focus:border-[#8b5cf6] focus:ring-2 focus:ring-[#4c00a4]/40"
+              maxLength={24}
+              onChange={(event) => {
+                setTechnicianName(event.currentTarget.value);
+                setNameValidation(null);
+              }}
+              placeholder="Technician name"
+              type="text"
+              value={technicianName}
+            />
+            {nameValidation ? (
+              <p className="mt-3 text-sm font-semibold text-[#fecaca]">
+                {nameValidation}
+              </p>
+            ) : null}
+            {message ? (
+              <p className="mt-3 text-sm font-semibold text-[#fecaca]">
+                {message}
+              </p>
+            ) : null}
+            <button
+              className="mt-5 min-h-14 w-full rounded-xl bg-[#6d28d9] px-5 py-3 text-lg font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={isEntering}
+              type="submit"
+            >
+              {isEntering ? "Joining..." : "Go"}
+            </button>
+          </form>
+        </div>
       ) : null}
     </div>
   );
