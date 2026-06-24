@@ -82,7 +82,7 @@ export function parseEventDescription(value: string | undefined) {
     return { effectName: null, positionName: null };
   }
 
-  const separatorIndex = description.indexOf(" // ");
+  const separatorIndex = description.indexOf("//");
 
   if (separatorIndex < 0) {
     return { effectName: description, positionName: null };
@@ -90,7 +90,7 @@ export function parseEventDescription(value: string | undefined) {
 
   return {
     effectName: optionalValue(description.slice(0, separatorIndex)),
-    positionName: optionalValue(description.slice(separatorIndex + 4)),
+    positionName: optionalValue(description.slice(separatorIndex + 2)),
   };
 }
 
@@ -273,3 +273,4 @@ export const cobra6xAdapter: ScriptAdapter = {
   label: "COBRA 6.X",
   parse: parseCobra6xCsv,
 };
+
