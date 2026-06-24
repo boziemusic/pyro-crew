@@ -13,6 +13,11 @@ export type ScriptEventRow = {
 };
 
 type ScriptEventInsert = Omit<ScriptEventRow, "id" | "created_at">;
+type ScriptPositionNameRow = {
+  position_name: string | null;
+};
+
+const SCRIPT_EVENT_PAGE_SIZE = 1000;
 
 export function normalizeScriptEventRows(
   showId: string,
@@ -46,14 +51,39 @@ export async function fetchScriptEvents(
   supabase: SupabaseClient,
   showId: string,
 ) {
-  return supabase
-    .from("script_events")
-    .select(
-      "id, show_id, channel_number, cue_value, position_name, effect_name, raw_row, created_at",
-      { count: "exact" },
-    )
-    .eq("show_id", showId)
-    .order("created_at", { ascending: true });
+  const rows: ScriptEventRow[] = [];
+  let rangeStart = 0;
+  let totalCount: number | null = null;
+
+  while (true) {
+    const { data, error, count } = await supabase
+      .from("script_events")
+      .select(
+        "id, show_id, channel_number, cue_value, position_name, effect_name, raw_row, created_at",
+        { count: "exact" },
+      )
+      .eq("show_id", showId)
+      .order("created_at", { ascending: true })
+      .range(rangeStart, rangeStart + SCRIPT_EVENT_PAGE_SIZE - 1);
+
+    if (error) {
+      return { data: null, error, count: count ?? totalCount };
+    }
+
+    const pageRows = (data ?? []) as ScriptEventRow[];
+
+    if (totalCount === null && typeof count === "number") {
+      totalCount = count;
+    }
+
+    rows.push(...pageRows);
+
+    if (pageRows.length < SCRIPT_EVENT_PAGE_SIZE) {
+      return { data: rows, error: null, count: totalCount };
+    }
+
+    rangeStart += SCRIPT_EVENT_PAGE_SIZE;
+  }
 }
 
 export async function fetchScriptEventPreview(
@@ -75,12 +105,37 @@ export async function fetchScriptPositionNames(
   supabase: SupabaseClient,
   showId: string,
 ) {
-  return supabase
-    .from("script_events")
-    .select("position_name")
-    .eq("show_id", showId)
-    .not("position_name", "is", null)
-    .order("position_name", { ascending: true });
+  const rows: ScriptPositionNameRow[] = [];
+  let rangeStart = 0;
+  let totalCount: number | null = null;
+
+  while (true) {
+    const { data, error, count } = await supabase
+      .from("script_events")
+      .select("position_name", { count: "exact" })
+      .eq("show_id", showId)
+      .not("position_name", "is", null)
+      .order("position_name", { ascending: true })
+      .range(rangeStart, rangeStart + SCRIPT_EVENT_PAGE_SIZE - 1);
+
+    if (error) {
+      return { data: null, error, count: count ?? totalCount };
+    }
+
+    const pageRows = (data ?? []) as ScriptPositionNameRow[];
+
+    if (totalCount === null && typeof count === "number") {
+      totalCount = count;
+    }
+
+    rows.push(...pageRows);
+
+    if (pageRows.length < SCRIPT_EVENT_PAGE_SIZE) {
+      return { data: rows, error: null, count: totalCount };
+    }
+
+    rangeStart += SCRIPT_EVENT_PAGE_SIZE;
+  }
 }
 
 export async function restoreScriptEvents(

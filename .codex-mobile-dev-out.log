@@ -12,3 +12,5 @@ Creating turbopack project { dir: 'M:\\PROJECTS\\Apps\\pyro-crew', testMode: tru
 ✓ Finished filesystem cache database compaction in 14.0s
  GET / 307 in 984ms (next.js: 713ms, application-code: 271ms)
  GET /shows 200 in 387ms (next.js: 158ms, application-code: 230ms)
+ GET / 307 in 56ms (next.js: 12ms, application-code: 44ms)
+ GET /shows 200 in 29ms (next.js: 6ms, application-code: 23ms)
