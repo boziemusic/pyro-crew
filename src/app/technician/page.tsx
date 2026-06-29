@@ -43,6 +43,7 @@ import {
   type HandoffNoticePayload,
   updateIncomingHandoffNotice,
   useTechnicianNotices,
+  getTechnicianHeartbeatDeviceId,
 } from "@/components/collaboration-store";
 import {
   getHistoryReadFailureMessage,
@@ -52,6 +53,12 @@ import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { REOPEN_ISSUE_HISTORY_NOTE } from "@/lib/reopen-issue";
 import { TechnicianMapAssist } from "@/components/technician-map-assist";
 import { PwaStatusLine } from "@/components/pwa-status-line";
+import {
+  formatPushStatus,
+  getPushNotificationStatus,
+  registerDevicePushSubscription,
+  type PushNotificationStatus,
+} from "@/lib/push-registration";
 import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
 import { useIsMobileDevice } from "@/components/mobile-device";
 import {
@@ -774,6 +781,18 @@ export default function TechnicianConsolePage() {
     sessionId: string;
   } | null>(null);
   const [isManuallyRefreshing, setIsManuallyRefreshing] = useState(false);
+  const [pushStatus, setPushStatus] =
+    useState<PushNotificationStatus>(() =>
+      typeof window === "undefined"
+        ? "not_available"
+        : getPushNotificationStatus().status,
+    );
+  const [pushStatusMessage, setPushStatusMessage] = useState<string | null>(() =>
+    typeof window === "undefined"
+      ? null
+      : getPushNotificationStatus().message ?? null,
+  );
+  const [isRegisteringPush, setIsRegisteringPush] = useState(false);
   const [handoffNotes, setHandoffNotes] = useState<Record<string, string>>(
     {},
   );
@@ -2453,6 +2472,28 @@ export default function TechnicianConsolePage() {
     setActiveShow(null);
     router.push("/shows");
   };
+  const enablePushNotifications = async () => {
+    setIsRegisteringPush(true);
+    setPushStatusMessage(null);
+
+    try {
+      const result = await registerDevicePushSubscription({
+        deviceId: getTechnicianHeartbeatDeviceId(),
+      });
+      setPushStatus(result.status);
+      setPushStatusMessage(result.message ?? null);
+    } catch (error) {
+      setPushStatus("not_available");
+      setPushStatusMessage(
+        error instanceof Error
+          ? error.message
+          : "Push notifications could not be enabled.",
+      );
+    } finally {
+      setIsRegisteringPush(false);
+    }
+  };
+
   const refreshTechnicianConsole = async () => {
     setIsManuallyRefreshing(true);
     try {
@@ -2563,6 +2604,33 @@ export default function TechnicianConsolePage() {
                   ? "Refreshing..."
                   : "Refresh Console"}
               </button>
+              <div className="border-t border-white/10 px-3 py-2">
+                <p className="text-xs font-semibold text-[#cbd5e1]">
+                  Push Notifications: {formatPushStatus(pushStatus)}
+                </p>
+                {pushStatusMessage ? (
+                  <p className="mt-1 text-[11px] leading-4 text-[#fbbf24]">
+                    {pushStatusMessage}
+                  </p>
+                ) : null}
+                <button
+                  className="mt-2 min-h-10 w-full rounded-md border border-[#8b5cf6]/40 bg-[#17102c] px-3 text-left text-xs font-semibold text-white active:bg-[#211044] disabled:cursor-not-allowed disabled:opacity-55"
+                  disabled={
+                    isRegisteringPush ||
+                    pushStatus === "enabled" ||
+                    pushStatus === "blocked" ||
+                    pushStatus === "not_supported"
+                  }
+                  onClick={() => void enablePushNotifications()}
+                  type="button"
+                >
+                  {isRegisteringPush
+                    ? "Enabling..."
+                    : pushStatus === "enabled"
+                      ? "Push Notifications Enabled"
+                      : "Enable Push Notifications"}
+                </button>
+              </div>
               <button
                 className="min-h-11 rounded-md px-3 text-left text-sm font-semibold text-[#fecaca] active:bg-[#2a0b13]"
                 onClick={clearActiveShow}

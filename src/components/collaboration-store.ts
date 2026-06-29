@@ -46,7 +46,7 @@ export type HandoffNoticePayload = {
 };
 
 const COLLABORATION_EVENT = "pyro-crew-collaboration-change";
-export const HEARTBEAT_ENABLED = false;
+export const HEARTBEAT_ENABLED = true;
 const TECHNICIAN_HEARTBEAT_DEVICE_STORAGE_KEY =
   "pyro-crew-technician-heartbeat-device-id";
 

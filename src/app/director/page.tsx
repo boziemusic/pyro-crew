@@ -50,6 +50,7 @@ import {
   removeTechnicianFromSession,
   useActiveAdditionalTechnicianAssignments,
   useJoinedSessionTechnicianNames,
+  HEARTBEAT_ENABLED,
 } from "@/components/collaboration-store";
 import {
   assignIssueToTechnician,
@@ -77,6 +78,7 @@ import {
   findScriptEvent,
   type ScriptEventRow,
 } from "@/lib/script-events";
+import { notifyDevice } from "@/lib/notifications/dispatch";
 import {
   REOPENABLE_ISSUE_STATUSES,
   REOPEN_ISSUE_HISTORY_NOTE,
@@ -143,6 +145,8 @@ type SessionSummaryHistory = {
   note: string | null;
   created_at: string | null;
 };
+
+type PushReadinessStatus = "enabled" | "disabled" | "unknown";
 
 type TechnicianPerformance = {
   technicianId: TemporaryTechnicianId;
@@ -501,6 +505,9 @@ export default function DirectorConsolePage() {
   const [technicianContextMenu, setTechnicianContextMenu] =
     useState<TechnicianContextMenuState | null>(null);
   const [isRemovingTechnician, setIsRemovingTechnician] = useState(false);
+  const [pushReadinessByTechnician, setPushReadinessByTechnician] = useState<
+    Record<string, PushReadinessStatus>
+  >({});
   const joinedTechnicianSoundSnapshot = useRef<Set<string> | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
   const technicianContextMenuRef = useRef<HTMLDivElement>(null);
@@ -514,6 +521,96 @@ export default function DirectorConsolePage() {
   const hasParsedScript = hasScriptEvents;
   const cueIsRequired = issueUsesCue(issueType);
   const cueIsRange = /^\s*\d+\s*-\s*\d+\s*$/.test(cueValue);
+
+  useEffect(() => {
+    const loadPushReadiness = async () => {
+      if (!activeShow?.id || !sessionForActiveShow?.id || !HEARTBEAT_ENABLED) {
+        setPushReadinessByTechnician({});
+        return;
+      }
+
+      const heartbeatResult = await supabase
+        .from("technician_heartbeats")
+        .select("technician_name, device_id, last_seen_at")
+        .eq("show_id", activeShow.id)
+        .eq("session_id", sessionForActiveShow.id);
+
+      if (heartbeatResult.error) {
+        setPushReadinessByTechnician({});
+        return;
+      }
+
+      const latestDeviceByTechnician = new Map<
+        string,
+        { deviceId: string; lastSeenAt: string }
+      >();
+
+      (heartbeatResult.data ?? []).forEach((row) => {
+        const technicianName = row.technician_name?.trim();
+        const deviceId = row.device_id?.trim();
+        const lastSeenAt = row.last_seen_at;
+
+        if (!technicianName || !deviceId || !lastSeenAt) {
+          return;
+        }
+
+        const existing = latestDeviceByTechnician.get(technicianName);
+        if (
+          !existing ||
+          getTimestampValue(lastSeenAt) > getTimestampValue(existing.lastSeenAt)
+        ) {
+          latestDeviceByTechnician.set(technicianName, { deviceId, lastSeenAt });
+        }
+      });
+
+      const deviceIds = [
+        ...new Set(
+          [...latestDeviceByTechnician.values()].map((entry) => entry.deviceId),
+        ),
+      ];
+
+      if (deviceIds.length === 0) {
+        setPushReadinessByTechnician({});
+        return;
+      }
+
+      const subscriptionResult = await supabase
+        .from("device_push_subscriptions")
+        .select("device_id, permission_status, is_active")
+        .eq("app_name", "continuity")
+        .in("device_id", deviceIds);
+
+      if (subscriptionResult.error) {
+        setPushReadinessByTechnician({});
+        return;
+      }
+
+      const enabledDeviceIds = new Set(
+        (subscriptionResult.data ?? [])
+          .filter(
+            (row) =>
+              row.is_active === true && row.permission_status === "granted",
+          )
+          .map((row) => row.device_id),
+      );
+      const knownDeviceIds = new Set(
+        (subscriptionResult.data ?? []).map((row) => row.device_id),
+      );
+      const nextReadiness: Record<string, PushReadinessStatus> = {};
+
+      latestDeviceByTechnician.forEach(({ deviceId }, technicianName) => {
+        nextReadiness[technicianName] = enabledDeviceIds.has(deviceId)
+          ? "enabled"
+          : knownDeviceIds.has(deviceId)
+            ? "disabled"
+            : "unknown";
+      });
+
+      setPushReadinessByTechnician(nextReadiness);
+    };
+
+    void loadPushReadiness();
+  }, [activeShow?.id, sessionForActiveShow?.id, supabase]);
 
   useEffect(() => {
     if (directorUnreadCommunicationCount === 0) {
@@ -1395,6 +1492,62 @@ export default function DirectorConsolePage() {
     });
   };
 
+  const getAssignmentNotificationBody = (issue: IssueRecord) => {
+    const parts = [
+      `CH ${issue.channel_number}`,
+      issueUsesCue(issue.issue_type) && issue.cue_value
+        ? `Cue ${issue.cue_value}`
+        : null,
+      formatIssueLabel(issue.issue_type),
+    ].filter(Boolean);
+
+    return parts.join(" | ");
+  };
+
+  const notifyAssignedTechnicianDevice = async (
+    issue: IssueRecord,
+    technicianId: TemporaryTechnicianId,
+  ) => {
+    const sessionId = issue.session_id ?? sessionForActiveShow?.id ?? null;
+
+    if (!activeShow?.id || !sessionId) {
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("technician_heartbeats")
+        .select("device_id, last_seen_at")
+        .eq("show_id", activeShow.id)
+        .eq("session_id", sessionId)
+        .eq("technician_name", technicianId)
+        .not("device_id", "is", null)
+        .order("last_seen_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error || !data?.device_id) {
+        if (error) {
+          console.warn("Push assignment device lookup failed", error);
+        }
+        return;
+      }
+
+      await notifyDevice(data.device_id, {
+        body: getAssignmentNotificationBody(issue),
+        data: {
+          type: "issue",
+          issue_id: issue.id,
+          session_id: sessionId,
+          show_id: activeShow.id,
+        },
+        title: "New Assignment",
+      });
+    } catch (error) {
+      console.warn("Push assignment notification failed", error);
+    }
+  };
+
   const assignTechnician = async (
     issue: IssueRecord,
     technicianId: TemporaryTechnicianId,
@@ -1471,6 +1624,7 @@ export default function DirectorConsolePage() {
           ? `Assignment saved, but technician notice failed: ${noticeError.message}`
           : null,
     );
+    void notifyAssignedTechnicianDevice(issue, technicianId);
     await Promise.all([refreshIssues(), refreshAssignments()]);
     setAssigningIssueId(null);
   };
@@ -2390,6 +2544,9 @@ export default function DirectorConsolePage() {
                 ] ?? 0
               }
               currentIssue={technician.currentIssue}
+              pushReadiness={
+                pushReadinessByTechnician[technician.id] ?? "unknown"
+              }
               hasAttention={technician.hasAttention}
               hasUnreadCommunication={
                 technician.hasUnreadCommunication
@@ -3559,6 +3716,7 @@ function TechOverviewCard({
   onOpenChat,
   onOpenContextMenu,
   onOpenVoiceMemos,
+  pushReadiness,
   queueCount,
   resolvedCount,
   technicianId,
@@ -3578,6 +3736,7 @@ function TechOverviewCard({
   onOpenChat: () => void;
   onOpenContextMenu: (x: number, y: number) => void;
   onOpenVoiceMemos: () => void;
+  pushReadiness: PushReadinessStatus;
   queueCount: number;
   resolvedCount: number;
   technicianId: TemporaryTechnicianId;
@@ -3585,6 +3744,19 @@ function TechOverviewCard({
   voiceMemoUnreadCount: number;
   workingCount: number;
 }) {
+  const pushReadinessClassName =
+    pushReadiness === "enabled"
+      ? "bg-[#22c55e]"
+      : pushReadiness === "disabled"
+        ? "bg-[#ef4444]"
+        : "bg-[#64748b]";
+  const pushReadinessLabel =
+    pushReadiness === "enabled"
+      ? "Push enabled"
+      : pushReadiness === "disabled"
+        ? "Push disabled"
+        : "Push unknown";
+
   const workloadClassName =
     loadCount >= 4
       ? "border-[#ef4444]/45 bg-[#2a0b13]"
@@ -3628,6 +3800,11 @@ function TechOverviewCard({
           <span className="text-xs font-bold text-[#dbe4ef]">
             Load {loadCount}
           </span>
+          <span
+            aria-label={pushReadinessLabel}
+            className={`inline-flex size-2.5 rounded-full ${pushReadinessClassName}`}
+            title={pushReadinessLabel}
+          />
           <span
             className="inline-flex items-center gap-1"
             onClick={(event) => {

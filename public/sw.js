@@ -56,3 +56,55 @@ self.addEventListener("fetch", (event) => {
     }),
   );
 });
+self.addEventListener("push", (event) => {
+  let notification = {
+    body: "Open Pyro Crew Continuity for details.",
+    data: { type: "system" },
+    title: "Pyro Crew Continuity",
+  };
+
+  if (event.data) {
+    try {
+      notification = {
+        ...notification,
+        ...event.data.json(),
+      };
+    } catch {
+      notification.body = event.data.text();
+    }
+  }
+
+  event.waitUntil(
+    self.registration.showNotification(notification.title, {
+      body: notification.body,
+      data: notification.data,
+      icon: "/icons/pwa-192.png",
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      const technicianClient = clientList.find((client) => {
+        try {
+          return new URL(client.url).pathname.startsWith("/technician");
+        } catch {
+          return false;
+        }
+      });
+
+      if (technicianClient && "focus" in technicianClient) {
+        return technicianClient.focus();
+      }
+
+      if (clients.openWindow) {
+        return clients.openWindow("/technician");
+      }
+
+      return undefined;
+    }),
+  );
+});
