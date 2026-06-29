@@ -19,6 +19,23 @@ import { createSupabaseBrowserClient } from "@/lib/supabase";
 
 type ReaderRole = "director" | "technician";
 
+function MessageSquareIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+    </svg>
+  );
+}
+
 export type DirectMessage = {
   body: string;
   client_message_id: string | null;
@@ -466,7 +483,7 @@ export function DirectChatButton({
       title="Direct message"
       type="button"
     >
-      <span aria-hidden="true" className="text-[10px] font-black uppercase tracking-[0.08em]">DM</span>
+      <MessageSquareIcon />
       {unreadCount > 0 ? (
         <span className="absolute -right-2 -top-2 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[#ef4444] px-1 text-[10px] font-bold text-white shadow-lg">
           {unreadCount > 99 ? "99+" : unreadCount}

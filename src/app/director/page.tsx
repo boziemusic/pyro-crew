@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   type FormEvent,
@@ -2168,18 +2168,24 @@ export default function DirectorConsolePage() {
     const menuWidth = 256;
     const menuHeight = 210;
     const viewportPadding = 8;
+    const nextX = Math.max(
+      viewportPadding,
+      Math.min(x, window.innerWidth - menuWidth - viewportPadding),
+    );
+    const nextY = Math.max(
+      viewportPadding,
+      Math.min(y, window.innerHeight - menuHeight - viewportPadding),
+    );
 
-    setTechnicianContextMenu({
-      ...technician,
-      x: Math.max(
-        viewportPadding,
-        Math.min(x, window.innerWidth - menuWidth - viewportPadding),
-      ),
-      y: Math.max(
-        viewportPadding,
-        Math.min(y, window.innerHeight - menuHeight - viewportPadding),
-      ),
-    });
+    setTechnicianContextMenu((currentMenu) =>
+      currentMenu?.technicianId === technician.technicianId
+        ? null
+        : {
+            ...technician,
+            x: nextX,
+            y: nextY,
+          },
+    );
   };
 
   const viewTechnicianCurrentIssue = () => {
@@ -3525,6 +3531,24 @@ function ReportRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function MoreHorizontalIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+      <circle cx="5" cy="12" r="1" />
+    </svg>
+  );
+}
 function TechOverviewCard({
   chatUnreadCount,
   currentIssue,
@@ -3624,17 +3648,20 @@ function TechOverviewCard({
           </span>
           <button
             aria-label={`Open actions for ${technicianName}`}
-            className="rounded border border-white/15 bg-black/15 px-2 py-1 text-sm font-bold leading-none text-[#cbd5e1] transition hover:border-white/35 hover:text-white"
+            className="inline-flex min-h-7 min-w-7 items-center justify-center rounded border border-white/15 bg-black/15 px-1 text-[#cbd5e1] transition hover:border-white/35 hover:text-white"
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
               const bounds = event.currentTarget.getBoundingClientRect();
               onOpenContextMenu(bounds.right - 248, bounds.bottom + 6);
             }}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
             title={`Open actions for ${technicianName}`}
             type="button"
           >
-            More
+            <MoreHorizontalIcon />
           </button>
         </div>
       </div>

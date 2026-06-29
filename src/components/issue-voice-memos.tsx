@@ -21,6 +21,25 @@ import {
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 
 const VOICE_MEMO_BUCKET = "issue-voice-memos";
+
+function MicIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <path d="M12 19v3" />
+    </svg>
+  );
+}
 const CLOSED_POLL_INTERVAL_MS = 5000;
 const OPEN_POLL_INTERVAL_MS = 2500;
 const MAX_RECORDING_MS = 20000;
@@ -698,7 +717,7 @@ export function IssueVoiceMemoButton({
       title="Voice Chat"
       type="button"
     >
-      <span aria-hidden="true" className="text-[10px] font-black uppercase tracking-[0.08em]">Voice</span>
+      <MicIcon />
       {unreadCount > 0 ? (
         <span className="absolute -right-2 -top-2 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[#ef4444] px-1 text-[10px] font-bold text-white shadow-lg">
           {unreadCount > 99 ? "99+" : unreadCount}
