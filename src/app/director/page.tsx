@@ -80,6 +80,10 @@ import {
 } from "@/lib/script-events";
 import { notifyDevice } from "@/lib/notifications/dispatch";
 import {
+  subscribeToOpsChannel,
+  unsubscribeFromOpsChannel,
+} from "@/lib/realtime/ops-channel";
+import {
   REOPENABLE_ISSUE_STATUSES,
   REOPEN_ISSUE_HISTORY_NOTE,
   reopenIssue,
@@ -508,6 +512,8 @@ export default function DirectorConsolePage() {
   const [pushReadinessByTechnician, setPushReadinessByTechnician] = useState<
     Record<string, PushReadinessStatus>
   >({});
+  const [unreadNoticeAlertsByTechnician, setUnreadNoticeAlertsByTechnician] =
+    useState<Record<string, number>>({});
   const joinedTechnicianSoundSnapshot = useRef<Set<string> | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
   const technicianContextMenuRef = useRef<HTMLDivElement>(null);
@@ -611,6 +617,48 @@ export default function DirectorConsolePage() {
 
     void loadPushReadiness();
   }, [activeShow?.id, sessionForActiveShow?.id, supabase]);
+
+  const refreshUnreadNoticeAlerts = useCallback(async () => {
+    if (!activeShow?.id || !sessionForActiveShow?.id) {
+      setUnreadNoticeAlertsByTechnician({});
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("technician_notices")
+      .select("technician_name")
+      .eq("show_id", activeShow.id)
+      .eq("session_id", sessionForActiveShow.id)
+      .eq("status", "unread");
+
+    if (error) {
+      setUnreadNoticeAlertsByTechnician({});
+      return;
+    }
+
+    const nextCounts: Record<string, number> = {};
+    (data ?? []).forEach((row) => {
+      const technicianName = row.technician_name?.trim();
+      if (!technicianName) {
+        return;
+      }
+      nextCounts[technicianName] = (nextCounts[technicianName] ?? 0) + 1;
+    });
+
+    setUnreadNoticeAlertsByTechnician(nextCounts);
+  }, [activeShow, sessionForActiveShow, supabase]);
+
+  useEffect(() => {
+    const initialId = window.setTimeout(() => {
+      void refreshUnreadNoticeAlerts();
+    }, 0);
+    const intervalId = window.setInterval(refreshUnreadNoticeAlerts, 5000);
+
+    return () => {
+      window.clearTimeout(initialId);
+      window.clearInterval(intervalId);
+    };
+  }, [refreshUnreadNoticeAlerts]);
 
   useEffect(() => {
     if (directorUnreadCommunicationCount === 0) {
@@ -933,6 +981,40 @@ export default function DirectorConsolePage() {
     return () => window.clearInterval(intervalId);
   }, [refreshIssueAssignmentHistory, refreshIssues]);
 
+  const refreshDirectorOpsState = useCallback(async () => {
+    await Promise.all([
+      refreshIssues(),
+      refreshAssignments(),
+      refreshAdditionalAssignments(),
+      refreshIssueAssignmentHistory(),
+      refreshUnreadNoticeAlerts(),
+    ]);
+  }, [
+    refreshAdditionalAssignments,
+    refreshAssignments,
+    refreshIssueAssignmentHistory,
+    refreshIssues,
+    refreshUnreadNoticeAlerts,
+  ]);
+
+  useEffect(() => {
+    if (!activeShow?.id) {
+      unsubscribeFromOpsChannel();
+      return;
+    }
+
+    subscribeToOpsChannel(activeShow.id, {
+      onChange: () => {
+        void refreshDirectorOpsState();
+      },
+      onDisconnect: (status) => {
+        console.warn("Director realtime sync disconnected", status);
+      },
+    });
+
+    return () => unsubscribeFromOpsChannel();
+  }, [activeShow?.id, refreshDirectorOpsState]);
+
   const statusGroups = useMemo(() => {
     const groups = new Map<string, IssueRecord[]>();
 
@@ -1088,6 +1170,12 @@ export default function DirectorConsolePage() {
             assignment,
           ]),
         );
+        const unreadAssignmentAlertCount = assignmentsForTechnician.filter(
+          (assignment) => !assignment.acknowledged_at,
+        ).length;
+        const unreadAlertCount =
+          unreadAssignmentAlertCount +
+          (unreadNoticeAlertsByTechnician[technician.id] ?? 0);
         const technicianIssues = issues.filter(
           (issue) =>
             technicianAssignments[issue.id] === technician.id ||
@@ -1252,6 +1340,7 @@ export default function DirectorConsolePage() {
             overviewAttentionStatuses.has(issue.status),
           ),
           hasUnreadCommunication,
+          unreadAlertCount,
           currentIssue: workingIssues[0] ?? null,
           locationIssue: locationIssue
             ? "issue" in locationIssue
@@ -1292,6 +1381,7 @@ export default function DirectorConsolePage() {
       directorDirectVoiceChat.unreadByTechnician,
       issues,
       technicianOptions,
+      unreadNoticeAlertsByTechnician,
       latestHistoricalTechnicianByIssue,
       latestIssueActionAt,
       sessionForActiveShow?.id,
@@ -2554,6 +2644,7 @@ export default function DirectorConsolePage() {
               key={technician.id}
               loadCount={technician.activeIssues.length}
               now={timerNow}
+              unreadAlertCount={technician.unreadAlertCount}
               onOpenChat={() => {
                 directorDirectChat.openChat(technician.id);
               }}
@@ -3721,6 +3812,7 @@ function TechOverviewCard({
   resolvedCount,
   technicianId,
   technicianName,
+  unreadAlertCount,
   voiceMemoUnreadCount,
   workingCount,
 }: {
@@ -3741,6 +3833,7 @@ function TechOverviewCard({
   resolvedCount: number;
   technicianId: TemporaryTechnicianId;
   technicianName: string;
+  unreadAlertCount: number;
   voiceMemoUnreadCount: number;
   workingCount: number;
 }) {
@@ -3842,10 +3935,22 @@ function TechOverviewCard({
           </button>
         </div>
       </div>
-      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] font-semibold text-[#dbe4ef]">
+      <div className="mt-2 grid grid-cols-4 gap-2 text-[11px] font-semibold text-[#dbe4ef]">
         <span>Working {workingCount}</span>
         <span>Queue {queueCount}</span>
         <span>Resolved {resolvedCount}</span>
+        <span
+          className={
+            unreadAlertCount > 0 ? "text-[#fecaca]" : "text-[#94a3b8]"
+          }
+          title={
+            unreadAlertCount > 0
+              ? "Technician has unread or unacknowledged alerts"
+              : "No unread technician alerts"
+          }
+        >
+          Alerts {unreadAlertCount}
+        </span>
       </div>
       {currentIssue ? (
         <div className="mt-3 grid gap-1 border-t border-white/10 pt-2">

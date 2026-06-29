@@ -57,29 +57,50 @@ self.addEventListener("fetch", (event) => {
   );
 });
 self.addEventListener("push", (event) => {
-  let notification = {
-    body: "Open Pyro Crew Continuity for details.",
-    data: { type: "system" },
-    title: "Pyro Crew Continuity",
-  };
+  let payload = null;
 
   if (event.data) {
     try {
-      notification = {
-        ...notification,
-        ...event.data.json(),
-      };
+      payload = event.data.json();
+      console.log("PUSH RECEIVED", payload);
     } catch {
-      notification.body = event.data.text();
+      const textPayload = event.data.text();
+      console.log("PUSH RECEIVED", textPayload);
+      payload = {
+        body: textPayload,
+      };
     }
+  } else {
+    console.log("PUSH RECEIVED", null);
   }
 
+  const notificationPayload = payload?.notification ?? payload ?? {};
+  const title = notificationPayload.title ?? payload?.title ?? "Pyro Crew Alert";
+  const body =
+    notificationPayload.body ??
+    payload?.body ??
+    "Open Pyro Crew Continuity for details.";
+  const data =
+    notificationPayload.data ??
+    payload?.data ?? {
+      type: "system",
+    };
+
+  const notificationOptions = {
+    badge: notificationPayload.badge ?? "/icons/pwa-192.png",
+    body,
+    data,
+    icon: notificationPayload.icon ?? "/icons/pwa-192.png",
+    requireInteraction: notificationPayload.requireInteraction ?? true,
+    vibrate: notificationPayload.vibrate ?? [200, 100, 200, 100, 200],
+  };
+
+  console.log("SHOW NOTIFICATION", { title, options: notificationOptions });
+
   event.waitUntil(
-    self.registration.showNotification(notification.title, {
-      body: notification.body,
-      data: notification.data,
-      icon: "/icons/pwa-192.png",
-    }),
+    self.registration
+      .showNotification(title, notificationOptions)
+      .then(() => console.log("SHOW NOTIFICATION EXECUTED", title)),
   );
 });
 

@@ -116,7 +116,7 @@ serve(async (request) => {
       icon: "/icons/pwa-192.png",
       requireInteraction: true,
       title,
-      vibrate: [100, 50, 100],
+      vibrate: [200, 100, 200, 100, 200],
     },
   });
   let sent = 0;
@@ -129,6 +129,7 @@ serve(async (request) => {
         await webpush.sendNotification(
           subscription.push_subscription,
           notificationPayload,
+          { urgency: "high" },
         );
         sent += 1;
       } catch (sendError) {

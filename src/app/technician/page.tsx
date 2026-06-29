@@ -44,6 +44,7 @@ import {
   updateIncomingHandoffNotice,
   useTechnicianNotices,
   getTechnicianHeartbeatDeviceId,
+  recordTechnicianHeartbeat,
 } from "@/components/collaboration-store";
 import {
   getHistoryReadFailureMessage,
@@ -59,6 +60,14 @@ import {
   registerDevicePushSubscription,
   type PushNotificationStatus,
 } from "@/lib/push-registration";
+import {
+  fetchMissedNotifications,
+  markMissedNotificationsSeen,
+} from "@/lib/notifications/recovery-sync";
+import {
+  subscribeToOpsChannel,
+  unsubscribeFromOpsChannel,
+} from "@/lib/realtime/ops-channel";
 import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
 import { useIsMobileDevice } from "@/components/mobile-device";
 import {
@@ -793,6 +802,7 @@ export default function TechnicianConsolePage() {
       : getPushNotificationStatus().message ?? null,
   );
   const [isRegisteringPush, setIsRegisteringPush] = useState(false);
+  const [unreadAlertCount, setUnreadAlertCount] = useState(0);
   const [handoffNotes, setHandoffNotes] = useState<Record<string, string>>(
     {},
   );
@@ -813,6 +823,8 @@ export default function TechnicianConsolePage() {
   const handledDirectorReturnNoticeIds = useRef<Set<string>>(new Set());
   const sessionStatusSnapshot = useRef<string | null>(null);
   const shownEndedSessionIds = useRef<Set<string>>(new Set());
+  const recoveredNotificationIds = useRef<Set<string>>(new Set());
+  const lastRecoverySyncAt = useRef(0);
 
   useEffect(() => {
     issueAlertSnapshot.current = null;
@@ -821,8 +833,11 @@ export default function TechnicianConsolePage() {
     pendingDirectorReturnNoticeIds.current = new Set();
     handledDirectorReturnNoticeIds.current = new Set();
     sessionStatusSnapshot.current = null;
+    recoveredNotificationIds.current = new Set();
+    lastRecoverySyncAt.current = 0;
 
     const resetId = window.setTimeout(() => {
+      setUnreadAlertCount(0);
       setDirectorReturnPopup(null);
       setRemovedSessionNotice(null);
       setSessionEndedPopup(null);
@@ -2508,6 +2523,144 @@ export default function TechnicianConsolePage() {
     }
   };
 
+  const runNotificationRecoverySync = useCallback(async () => {
+    if (
+      !activeShow ||
+      !activeSession ||
+      activeSession.show_id !== activeShow.id
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastRecoverySyncAt.current < 5000) {
+      return;
+    }
+    lastRecoverySyncAt.current = now;
+
+    const deviceId = getTechnicianHeartbeatDeviceId();
+
+    try {
+      await recordTechnicianHeartbeat({
+        sessionId: activeSession.id,
+        showId: activeShow.id,
+        technicianId: selectedTechnician,
+      });
+
+      const recovery = await fetchMissedNotifications(deviceId);
+      if (
+        !recovery.context ||
+        recovery.context.showId !== activeShow.id ||
+        recovery.context.sessionId !== activeSession.id ||
+        recovery.context.technicianName !== selectedTechnician
+      ) {
+        return;
+      }
+
+      const newItems = recovery.items.filter((item) => {
+        const recoveryId = item.alertKey;
+        if (recoveredNotificationIds.current.has(recoveryId)) {
+          return false;
+        }
+
+        recoveredNotificationIds.current.add(recoveryId);
+        return true;
+      });
+
+      if (newItems.length === 0) {
+        setUnreadAlertCount(0);
+        return;
+      }
+
+      setUnreadAlertCount(newItems.length);
+      await Promise.all([refreshIssues(), refreshNotices()]);
+      playWarning();
+      vibrate([160, 80, 160]);
+      setFeedback({
+        type: "success",
+        message:
+          newItems.length === 1
+            ? "Recovered 1 unread alert."
+            : "Recovered " + newItems.length + " unread alerts.",
+      });
+
+      const { error: seenError } = await markMissedNotificationsSeen({
+        context: recovery.context,
+        deviceId,
+        items: newItems,
+      });
+
+      if (!seenError) {
+        window.setTimeout(() => setUnreadAlertCount(0), 3000);
+      }
+    } catch (error) {
+      console.warn("Notification recovery sync failed", error);
+    }
+  }, [
+    activeSession,
+    activeShow,
+    refreshIssues,
+    refreshNotices,
+    selectedTechnician,
+  ]);
+
+  useEffect(() => {
+    const sync = () => {
+      void runNotificationRecoverySync();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        sync();
+      }
+    };
+
+    const initialId = window.setTimeout(sync, 0);
+    window.addEventListener("focus", sync);
+    window.addEventListener("pageshow", sync);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearTimeout(initialId);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("pageshow", sync);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [runNotificationRecoverySync]);
+
+  const refreshTechnicianOpsState = useCallback(async () => {
+    await Promise.all([
+      refreshIssues(),
+      refreshNotices(),
+      technicianDirectChat.refresh(),
+      technicianDirectVoiceChat.refresh(),
+    ]);
+    await runNotificationRecoverySync();
+  }, [
+    refreshIssues,
+    refreshNotices,
+    runNotificationRecoverySync,
+    technicianDirectChat,
+    technicianDirectVoiceChat,
+  ]);
+
+  useEffect(() => {
+    if (!activeShow?.id) {
+      unsubscribeFromOpsChannel();
+      return;
+    }
+
+    subscribeToOpsChannel(activeShow.id, {
+      onChange: () => {
+        void refreshTechnicianOpsState();
+      },
+      onDisconnect: (status) => {
+        console.warn("Technician realtime sync disconnected", status);
+      },
+    });
+
+    return () => unsubscribeFromOpsChannel();
+  }, [activeShow?.id, refreshTechnicianOpsState]);
+
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 pb-28 pt-0 md:gap-6 md:px-8 md:py-6 lg:py-8">
       <header className={`${isMobileDevice ? "flex" : "hidden"} sticky top-0 z-40 -mx-3 min-h-16 items-center justify-between gap-3 border-b border-white/10 bg-[#070b18]/95 px-4 py-2 shadow-xl shadow-black/30 backdrop-blur`}>
@@ -2523,6 +2676,11 @@ export default function TechnicianConsolePage() {
             {" - "}
             {getTemporaryTechnicianLabel(selectedTechnician)}
           </p>
+          {unreadAlertCount > 0 ? (
+            <p className="mt-1 inline-flex rounded-full border border-[#ef4444]/45 bg-[#2a0b13] px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#fecaca]">
+              {unreadAlertCount} unread alert{unreadAlertCount === 1 ? "" : "s"}
+            </p>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <DirectChatButton
