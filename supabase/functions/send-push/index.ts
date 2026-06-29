@@ -109,9 +109,15 @@ serve(async (request) => {
   }
 
   const notificationPayload = JSON.stringify({
-    title,
-    body,
-    data: payload.data ?? { type: "system" },
+    notification: {
+      badge: "/icons/pwa-192.png",
+      body,
+      data: payload.data ?? { type: "system" },
+      icon: "/icons/pwa-192.png",
+      requireInteraction: true,
+      title,
+      vibrate: [100, 50, 100],
+    },
   });
   let sent = 0;
   let inactive = 0;
