@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  DragEvent,
   FormEvent,
   useCallback,
   useEffect,
@@ -92,9 +93,25 @@ const fieldClassName =
 const firingSystemLabels: Record<FiringSystem, string> = {
   cobra_6x: "COBRA 6.X",
   cobra_7x: "COBRA 7.X",
+  cobra_8x: "COBRA 8.0",
 };
 
 const SHOW_CODE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function isCsvFile(file: File) {
+  return (
+    file.type === "text/csv" ||
+    file.name.trim().toLowerCase().endsWith(".csv")
+  );
+}
+
+function getUniqueParsedPositionCount(result: ScriptParseResult) {
+  return new Set(
+    result.rows
+      .map((row) => row.position_name?.trim())
+      .filter((positionName): positionName is string => Boolean(positionName)),
+  ).size;
+}
 
 function generateShowCode() {
   const randomValues = new Uint32Array(4);
@@ -253,6 +270,11 @@ function ConfiguredShowsWorkspace() {
   );
   const [newShowParseResult, setNewShowParseResult] =
     useState<ScriptParseResult | null>(null);
+  const [isNewShowScriptDragActive, setIsNewShowScriptDragActive] =
+    useState(false);
+  const [isParsingNewShowScript, setIsParsingNewShowScript] =
+    useState(false);
+  const newShowScriptInputRef = useRef<HTMLInputElement | null>(null);
   const [showsView, setShowsView] = useState<ShowsView>("landing");
   const [deleteCandidate, setDeleteCandidate] =
     useState<ShowRecord | null>(null);
@@ -542,6 +564,11 @@ function ConfiguredShowsWorkspace() {
       return;
     }
 
+    if (isParsingNewShowScript) {
+      setValidationMessage("Wait for the script to finish parsing.");
+      return;
+    }
+
     setIsCreating(true);
     let parsedResult = newShowParseResult;
 
@@ -551,13 +578,15 @@ function ConfiguredShowsWorkspace() {
         setNewShowParseResult(parsedResult);
 
         if (parsedResult.errors.length > 0) {
-          setMessage(`Script import failed: ${parsedResult.errors.join(" ")}`);
+          setValidationMessage(
+            `Script import failed: ${parsedResult.errors.join(" ")}`,
+          );
           setIsCreating(false);
           return;
         }
       }
     } catch (parseError) {
-      setMessage(
+      setValidationMessage(
         `Could not parse script: ${
           parseError instanceof Error
             ? parseError.message
@@ -818,26 +847,87 @@ function ConfiguredShowsWorkspace() {
     }
   };
 
-  const handleSelectNewShowScript = async (file: File | null) => {
+  const handleSelectNewShowScript = async (
+    file: File | null,
+    adapterKey: FiringSystem | "" = firingSystem,
+  ) => {
     setNewShowScriptFile(file);
     setNewShowParseResult(null);
     setMessage(null);
+    setValidationMessage(null);
 
-    if (!file || !firingSystem) {
+    if (!file) {
       return;
     }
 
+    if (!isCsvFile(file)) {
+      setNewShowScriptFile(null);
+      setValidationMessage("Please choose a CSV script file.");
+      return;
+    }
+
+    if (!adapterKey) {
+      setValidationMessage(
+        "Choose a firing system before uploading a script.",
+      );
+      return;
+    }
+
+    setIsParsingNewShowScript(true);
+
     try {
-      setNewShowParseResult(await parseScriptFile(file, firingSystem));
+      const result = await parseScriptFile(file, adapterKey);
+      setNewShowParseResult(result);
+
+      if (result.errors.length > 0) {
+        setValidationMessage(
+          `Script import failed: ${result.errors.join(" ")}`,
+        );
+      }
     } catch (error) {
-      setMessage(
+      setValidationMessage(
         `Could not parse script: ${
           error instanceof Error ? error.message : "Unknown parser error"
         }`,
       );
+    } finally {
+      setIsParsingNewShowScript(false);
     }
   };
 
+  const handleNewShowScriptDragOver = (
+    event: DragEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsNewShowScriptDragActive(true);
+  };
+
+  const handleNewShowScriptDragLeave = (
+    event: DragEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const nextTarget = event.relatedTarget;
+
+    if (
+      nextTarget instanceof Node &&
+      event.currentTarget.contains(nextTarget)
+    ) {
+      return;
+    }
+
+    setIsNewShowScriptDragActive(false);
+  };
+
+  const handleNewShowScriptDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsNewShowScriptDragActive(false);
+
+    void handleSelectNewShowScript(event.dataTransfer.files.item(0));
+  };
   const handleDeleteShow = async () => {
     if (!deleteCandidate) {
       return;
@@ -1267,13 +1357,24 @@ function ConfiguredShowsWorkspace() {
               <select
                 className={fieldClassName}
                 onChange={(event) => {
-                  setFiringSystem(
-                    event.target.value as FiringSystem | "",
-                  );
+                  const nextFiringSystem = event.target.value as
+                    | FiringSystem
+                    | "";
 
-                  if (!event.target.value) {
+                  setFiringSystem(nextFiringSystem);
+                  setValidationMessage(null);
+
+                  if (!nextFiringSystem) {
                     setNewShowScriptFile(null);
                     setNewShowParseResult(null);
+                    return;
+                  }
+
+                  if (newShowScriptFile) {
+                    void handleSelectNewShowScript(
+                      newShowScriptFile,
+                      nextFiringSystem,
+                    );
                   }
                 }}
                 value={firingSystem}
@@ -1299,24 +1400,106 @@ function ConfiguredShowsWorkspace() {
               />
             </label>
             {firingSystem ? (
-              <div className="rounded-lg border border-dashed border-[#475569] bg-[#070b18] px-4 py-5">
-                <p className="text-base font-semibold text-white">
-                  Script Upload
-                </p>
-                <p className="mt-2 text-sm leading-6 text-[#94a3b8]">
-                  Select a script to parse and store its events in Supabase with
-                  the filename, upload timestamp, and COBRA adapter key.
-                </p>
+              <div
+                className={`rounded-lg border border-dashed px-4 py-5 transition sm:px-5 ${
+                  isNewShowScriptDragActive
+                    ? "border-[#a78bfa] bg-[#17102c] shadow-lg shadow-[#4c00a4]/20"
+                    : "border-[#475569] bg-[#070b18]"
+                }`}
+                onDragEnter={handleNewShowScriptDragOver}
+                onDragLeave={handleNewShowScriptDragLeave}
+                onDragOver={handleNewShowScriptDragOver}
+                onDrop={handleNewShowScriptDrop}
+              >
                 <input
                   accept=".csv,text/csv"
-                  className="mt-4 block w-full text-sm text-[#cbd5e1] file:mr-3 file:rounded-md file:border-0 file:bg-[#4c00a4] file:px-3 file:py-2 file:font-semibold file:text-white"
+                  className="sr-only"
                   onChange={(event) =>
                     void handleSelectNewShowScript(
                       event.target.files?.[0] ?? null,
                     )
                   }
+                  ref={newShowScriptInputRef}
                   type="file"
                 />
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-base font-semibold text-white">
+                      Script Upload
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-[#94a3b8]">
+                      Drag a CSV script here or browse to parse it immediately
+                      with {firingSystemLabels[firingSystem]}.
+                    </p>
+                  </div>
+                  <button
+                    className="min-h-11 shrink-0 touch-manipulation rounded-md bg-[#6d28d9] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#7c3aed] active:bg-[#7c3aed]"
+                    onClick={() => {
+                      if (newShowScriptInputRef.current) {
+                        newShowScriptInputRef.current.value = "";
+                        newShowScriptInputRef.current.click();
+                      }
+                    }}
+                    type="button"
+                  >
+                    {newShowScriptFile ? "Replace File" : "Browse Files"}
+                  </button>
+                </div>
+
+                <div className="mt-5 rounded-lg border border-white/10 bg-black/20 p-4">
+                  {isNewShowScriptDragActive ? (
+                    <p className="text-base font-bold text-[#ddd6fe]">
+                      Release to upload script
+                    </p>
+                  ) : newShowScriptFile ? (
+                    <div className="grid gap-3">
+                      <p className="truncate text-base font-bold text-[#bbf7d0]">
+                        {"\u2713"} {newShowScriptFile.name}
+                      </p>
+                      <dl className="grid gap-3 text-sm sm:grid-cols-3">
+                        <div>
+                          <dt className="text-[#64748b]">Detected</dt>
+                          <dd className="mt-1 font-semibold text-[#dbe4ef]">
+                            {firingSystemLabels[firingSystem]}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-[#64748b]">Event count</dt>
+                          <dd className="mt-1 font-semibold text-[#dbe4ef]">
+                            {isParsingNewShowScript
+                              ? "Parsing..."
+                              : newShowParseResult?.rows.length ?? "—"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-[#64748b]">
+                            Unique position count
+                          </dt>
+                          <dd className="mt-1 font-semibold text-[#dbe4ef]">
+                            {isParsingNewShowScript
+                              ? "Parsing..."
+                              : newShowParseResult
+                                ? getUniqueParsedPositionCount(
+                                    newShowParseResult,
+                                  )
+                                : "—"}
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  ) : (
+                    <div className="grid gap-2 text-sm leading-6 text-[#94a3b8]">
+                      <p className="font-semibold text-[#dbe4ef]">
+                        Drop CSV script here
+                      </p>
+                      <p>
+                        Only `.csv` files are accepted. The parser runs as soon
+                        as a file is selected.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
                 {newShowParseResult ? (
                   <ScriptParseSummary result={newShowParseResult} />
                 ) : null}
@@ -1333,7 +1516,7 @@ function ConfiguredShowsWorkspace() {
               </p>
               <button
                 className="rounded-lg bg-[#6d28d9] px-5 py-3 text-base font-semibold text-white shadow-lg shadow-[#4c00a4]/30 transition-colors hover:bg-[#7c3aed] disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={isCreating}
+                disabled={isCreating || isParsingNewShowScript}
                 type="submit"
               >
                 {isCreating ? "Creating..." : "Create Show"}
@@ -1406,7 +1589,7 @@ function ConfiguredShowsWorkspace() {
                             isExpanded ? "rotate-90" : ""
                           }`}
                         >
-                          ›
+                          &gt;
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-base font-semibold text-white">
@@ -1867,7 +2050,7 @@ function MobileTechnicianEntry({
 
     if (!isValidTechnicianDisplayName(normalizedName)) {
       setNameValidation(
-        "Enter 2–24 characters using letters, numbers, spaces, hyphen, or apostrophe.",
+        "Enter 2-24 characters using letters, numbers, spaces, hyphen, or apostrophe.",
       );
       return;
     }
@@ -2495,3 +2678,9 @@ function ScriptEventPreviewTable({ rows }: { rows: ScriptEventRow[] }) {
     </div>
   );
 }
+
+
+
+
+
+

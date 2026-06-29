@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+﻿import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ParsedScriptRow } from "@/lib/script-adapters";
 
 export type ScriptEventRow = {
@@ -239,6 +239,24 @@ export async function findScriptEvent(
     .eq("show_id", showId)
     .eq("channel_number", channelNumber)
     .eq("cue_value", cueValue.trim())
+    .limit(1)
+    .maybeSingle();
+}
+
+export async function findFirstScriptEventForChannel(
+  supabase: SupabaseClient,
+  showId: string,
+  channelNumber: number,
+) {
+  return supabase
+    .from("script_events")
+    .select(
+      "id, show_id, channel_number, cue_value, position_name, effect_name, raw_row, created_at",
+    )
+    .eq("show_id", showId)
+    .eq("channel_number", channelNumber)
+    .order("created_at", { ascending: true })
+    .order("cue_value", { ascending: true })
     .limit(1)
     .maybeSingle();
 }

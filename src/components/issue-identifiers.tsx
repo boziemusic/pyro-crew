@@ -1,12 +1,40 @@
+﻿export const CUE_LEVEL_ISSUE_TYPES = [
+  "no_continuity",
+  "unexpected_continuity",
+] as const;
+
+export const CHANNEL_LEVEL_ISSUE_TYPES = [
+  "module_offline",
+  "low_battery",
+  "poor_signal",
+] as const;
+
+export type CueLevelIssueType = (typeof CUE_LEVEL_ISSUE_TYPES)[number];
+export type ChannelLevelIssueType =
+  (typeof CHANNEL_LEVEL_ISSUE_TYPES)[number];
+export type ContinuityIssueType = CueLevelIssueType | ChannelLevelIssueType;
+
 type IssueIdentifiersProps = {
   channelNumber: number | string;
-  cueValue: string;
+  cueValue?: string | null;
   issueType: string;
   cueLabel?: "Cue" | "Cue(s)";
 };
 
 export const ISSUE_IDENTIFIER_VALUE_CLASS_NAME =
   "font-bold text-[#f28b82]";
+
+export function isCueLevelIssueType(value: string | null | undefined) {
+  return CUE_LEVEL_ISSUE_TYPES.includes(value as CueLevelIssueType);
+}
+
+export function isChannelLevelIssueType(value: string | null | undefined) {
+  return CHANNEL_LEVEL_ISSUE_TYPES.includes(value as ChannelLevelIssueType);
+}
+
+export function issueUsesCue(value: string | null | undefined) {
+  return isCueLevelIssueType(value);
+}
 
 export function formatIssueLabel(value: string) {
   const labels: Record<string, string> = {
@@ -22,6 +50,8 @@ export function formatIssueLabel(value: string) {
       "Additional Technician Requested",
     unfixable: "Unfixable",
     closed: "Closed",
+    low_battery: "Low Battery",
+    poor_signal: "Poor Signal",
   };
 
   if (labels[value]) {
@@ -67,17 +97,23 @@ export function IssueIdentifiers({
   issueType,
   cueLabel = "Cue(s)",
 }: IssueIdentifiersProps) {
+  const shouldShowCue = issueUsesCue(issueType) && Boolean(cueValue?.trim());
+
   return (
     <span>
-      CH{" "}
+      <strong className="font-bold text-white">CH</strong>{" "}
       <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
         {channelNumber}
       </strong>
-      <span className="text-[#64748b]"> | </span>
-      {cueLabel}{" "}
-      <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
-        {cueValue}
-      </strong>
+      {shouldShowCue ? (
+        <>
+          <span className="text-[#64748b]"> | </span>
+          <strong className="font-bold text-white">{cueLabel}</strong>{" "}
+          <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
+            {cueValue}
+          </strong>
+        </>
+      ) : null}
       <span className="text-[#64748b]"> | </span>
       <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
         {formatIssueLabel(issueType)}

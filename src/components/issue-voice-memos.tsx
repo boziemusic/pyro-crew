@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   useCallback,
@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { IssueIdentifiers } from "@/components/issue-identifiers";
 import { getTemporaryTechnicianLabel } from "./temporary-technician-store";
 import {
   CommunicationIssueRider,
@@ -54,6 +55,7 @@ export type IssueVoiceMemoTarget = {
   channelNumber?: number;
   cueValue?: string;
   id?: string;
+  issueType?: string;
   positionName?: string | null;
   technicianName?: string;
 };
@@ -696,7 +698,7 @@ export function IssueVoiceMemoButton({
       title="Voice Chat"
       type="button"
     >
-      <span aria-hidden="true">🎙️</span>
+      <span aria-hidden="true" className="text-[10px] font-black uppercase tracking-[0.08em]">Voice</span>
       {unreadCount > 0 ? (
         <span className="absolute -right-2 -top-2 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[#ef4444] px-1 text-[10px] font-bold text-white shadow-lg">
           {unreadCount > 99 ? "99+" : unreadCount}
@@ -1035,7 +1037,7 @@ export function IssueVoiceMemoPanel({
             ) : null}
           </span>
           <span className="text-[#64748b]">
-            {formatDuration(memo.duration_ms)} ·{" "}
+            {formatDuration(memo.duration_ms)} -{" "}
             {formatMemoTime(memo.created_at)}
           </span>
         </div>
@@ -1056,7 +1058,7 @@ export function IssueVoiceMemoPanel({
           </audio>
         ) : (
           <p className="mt-2 text-xs text-[#94a3b8]">
-            Loading audio…
+            Loading audio...
           </p>
         )}
         {failedAutoPlayMemoId === memo.id ? (
@@ -1123,12 +1125,21 @@ export function IssueVoiceMemoPanel({
               id="issue-voice-chat-title"
             >
               {target.technicianName
-                ? `Director ↔ ${getTemporaryTechnicianLabel(target.technicianName)}`
-                : `CH ${target.channelNumber} | Cue(s) ${target.cueValue}`}
+                ? `Director / ${getTemporaryTechnicianLabel(target.technicianName)}`
+                : null}
             </h2>
+            {!target.technicianName && target.channelNumber ? (
+              <p className="mt-1 text-xs font-semibold text-[#dbe4ef]">
+                <IssueIdentifiers
+                  channelNumber={target.channelNumber}
+                  cueValue={target.cueValue}
+                  issueType={target.issueType ?? "no_continuity"}
+                />
+              </p>
+            ) : null}
             {!target.technicianName ? (
               <p className="mt-1 text-xs text-[#94a3b8]">
-                Position: {target.positionName ?? "—"}
+                Position: {target.positionName ?? "None"}
               </p>
             ) : null}
           </div>
@@ -1194,12 +1205,12 @@ export function IssueVoiceMemoPanel({
               onPointerUp={handlePointerRelease}
               type="button"
             >
-              <span aria-hidden="true" className="text-2xl">🎙️</span>
+              <span aria-hidden="true" className="text-sm font-black uppercase tracking-[0.08em]">Voice</span>
               <span className="mt-1 text-sm">
                 {isUploading
-                  ? "Sending…"
+                  ? "Sending..."
                   : recordingState === "requesting"
-                    ? "Getting Mic…"
+                    ? "Getting Mic..."
                     : recordingState === "recording"
                       ? "Release to Send"
                       : "Hold to Record"}
@@ -1224,3 +1235,5 @@ export function IssueVoiceMemoPanel({
     </div>
   );
 }
+
+

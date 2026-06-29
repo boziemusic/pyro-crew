@@ -10,9 +10,17 @@ import {
   parseEventDescription,
 } from "./cobra-6x";
 
-function isFirmware7Marker(record: string[]) {
+type CobraFirmwareParserOptions = {
+  displayLabel: string;
+  firmware: "7" | "8";
+  ignoredEventFirstCells?: string[];
+};
+
+function isFirmwareMarker(record: string[], firmware: string) {
+  const marker = `#@firmware${firmware}`;
+
   return record.some(
-    (value) => value.trim().toLowerCase() === "#@firmware7",
+    (value) => value.trim().toLowerCase() === marker,
   );
 }
 
@@ -43,6 +51,15 @@ function isMetadataOrHeaderRecord(record: string[]) {
   const firstCell = getFirstNonBlankCell(record);
 
   return firstCell.startsWith("#");
+}
+
+function isIgnoredEventRecord(
+  record: string[],
+  ignoredFirstCells: string[],
+) {
+  const normalizedFirstCell = getFirstNonBlankCell(record).toLowerCase();
+
+  return ignoredFirstCells.includes(normalizedFirstCell);
 }
 
 function parseEventRecord(
@@ -79,7 +96,14 @@ function parseEventRecord(
   } satisfies ParsedScriptRow;
 }
 
-export function parseCobra7xCsv(contents: string): ScriptParseResult {
+export function parseCobraFirmwareCsv(
+  contents: string,
+  {
+    displayLabel,
+    firmware,
+    ignoredEventFirstCells = [],
+  }: CobraFirmwareParserOptions,
+): ScriptParseResult {
   const { records, errors } = parseCsvRecords(
     contents.replace(/^\uFEFF/, ""),
     true,
@@ -94,14 +118,14 @@ export function parseCobra7xCsv(contents: string): ScriptParseResult {
     };
   }
 
-  if (!records.some(isFirmware7Marker)) {
+  if (!records.some((record) => isFirmwareMarker(record, firmware))) {
     return {
       rows: [],
       skippedRowCount: 0,
       warnings: [],
       errors: [
         ...errors,
-        "COBRA firmware7 marker #@firmware7 was not found.",
+        `COBRA firmware${firmware} marker #@firmware${firmware} was not found.`,
       ],
     };
   }
@@ -147,6 +171,11 @@ export function parseCobra7xCsv(contents: string): ScriptParseResult {
         break;
       }
 
+      if (isIgnoredEventRecord(eventRecord, ignoredEventFirstCells)) {
+        index = eventIndex;
+        break;
+      }
+
       const parsedRow = parseEventRecord(
         eventRecord,
         rawHeaders,
@@ -178,7 +207,7 @@ export function parseCobra7xCsv(contents: string): ScriptParseResult {
       warnings: [],
       errors: [
         ...errors,
-        "COBRA firmware7 event header row was not found.",
+        `COBRA firmware${firmware} event header row was not found.`,
       ],
     };
   }
@@ -190,7 +219,7 @@ export function parseCobra7xCsv(contents: string): ScriptParseResult {
       : []),
     ...(trackSectionCount > 0 && eventTableCount > 1
       ? [
-          `Flattened ${eventTableCount} COBRA 7.X event table(s) across ${trackSectionCount} track section(s).`,
+          `Flattened ${eventTableCount} ${displayLabel} event table(s) across ${trackSectionCount} track section(s).`,
         ]
       : []),
   ];
@@ -198,11 +227,18 @@ export function parseCobra7xCsv(contents: string): ScriptParseResult {
     rows.length === 0
       ? [
           ...errors,
-          "COBRA firmware7 script does not contain any valid event rows.",
+          `COBRA firmware${firmware} script does not contain any valid event rows.`,
         ]
       : errors;
 
   return { rows, skippedRowCount, warnings, errors: resultErrors };
+}
+
+export function parseCobra7xCsv(contents: string): ScriptParseResult {
+  return parseCobraFirmwareCsv(contents, {
+    displayLabel: "COBRA 7.X",
+    firmware: "7",
+  });
 }
 
 export const cobra7xAdapter: ScriptAdapter = {
@@ -210,3 +246,4 @@ export const cobra7xAdapter: ScriptAdapter = {
   label: "COBRA 7.X",
   parse: parseCobra7xCsv,
 };
+

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   type FormEvent,
@@ -12,9 +12,10 @@ import {
 import Link from "next/link";
 import { useActiveShow } from "@/components/active-show-strip";
 import {
+  type ContinuityIssueType,
   formatIssueLabel,
+  issueUsesCue,
   getIssueStatusClassName,
-  ISSUE_IDENTIFIER_VALUE_CLASS_NAME,
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import { JoinCodeQr } from "@/components/join-code-qr";
@@ -72,6 +73,7 @@ import {
 } from "@/lib/issue-status-history";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import {
+  findFirstScriptEventForChannel,
   findScriptEvent,
   type ScriptEventRow,
 } from "@/lib/script-events";
@@ -106,10 +108,7 @@ const cannedDirectorNotes = [
   },
 ];
 
-type IssueType =
-  | "no_continuity"
-  | "unexpected_continuity"
-  | "module_offline";
+type IssueType = ContinuityIssueType;
 
 type IssueRecord = {
   id: string;
@@ -177,7 +176,7 @@ type CreatedIssueFeedback = {
 
 type DuplicateIssue = {
   issue: IssueRecord;
-  matchedCue: string;
+  matchedCue: string | null;
   technicianName: string | null;
 };
 
@@ -513,6 +512,7 @@ export default function DirectorConsolePage() {
     [showPositions.groups],
   );
   const hasParsedScript = hasScriptEvents;
+  const cueIsRequired = issueUsesCue(issueType);
   const cueIsRange = /^\s*\d+\s*-\s*\d+\s*$/.test(cueValue);
 
   useEffect(() => {
@@ -584,26 +584,40 @@ export default function DirectorConsolePage() {
   }, [activeShow, supabase]);
 
   useEffect(() => {
-    if (
-      !activeShow ||
-      !hasScriptEvents ||
-      !channelNumber ||
-      !cueValue.trim() ||
-      cueIsRange
-    ) {
-      return;
+    if (!activeShow || !hasScriptEvents || !channelNumber || !issueType) {
+      const resetId = window.setTimeout(() => {
+        setResolvedScriptRow(null);
+        setScriptLookupState("idle");
+      }, 0);
+
+      return () => window.clearTimeout(resetId);
+    }
+
+    if (cueIsRequired && (!cueValue.trim() || cueIsRange)) {
+      const resetId = window.setTimeout(() => {
+        setResolvedScriptRow(null);
+        setScriptLookupState("idle");
+      }, 0);
+
+      return () => window.clearTimeout(resetId);
     }
 
     let cancelled = false;
     const timeoutId = window.setTimeout(async () => {
       setResolvedScriptRow(null);
       setScriptLookupState("loading");
-      const { data, error } = await findScriptEvent(
-        supabase,
-        activeShow.id,
-        Number(channelNumber),
-        cueValue,
-      );
+      const { data, error } = cueIsRequired
+        ? await findScriptEvent(
+            supabase,
+            activeShow.id,
+            Number(channelNumber),
+            cueValue,
+          )
+        : await findFirstScriptEventForChannel(
+            supabase,
+            activeShow.id,
+            Number(channelNumber),
+          );
 
       if (cancelled) {
         return;
@@ -629,8 +643,10 @@ export default function DirectorConsolePage() {
     activeShow,
     channelNumber,
     cueIsRange,
+    cueIsRequired,
     cueValue,
     hasScriptEvents,
+    issueType,
     supabase,
   ]);
 
@@ -1220,6 +1236,7 @@ export default function DirectorConsolePage() {
       ? {
           channelNumber: issue.channel_number,
           cueValue: issue.cue_value,
+          issueType: issue.issue_type,
           positionName: issue.position_name,
         }
       : null;
@@ -1944,9 +1961,11 @@ export default function DirectorConsolePage() {
       return;
     }
 
-    if (!channelNumber || !cueValue.trim() || !issueType) {
+    if (!channelNumber || !issueType || (cueIsRequired && !cueValue.trim())) {
       setErrorMessage(
-        "Channel Number, Cue(s), and Issue Type are required.",
+        cueIsRequired
+          ? "Issue Type, Channel, and Cue(s) are required."
+          : "Issue Type and Channel are required.",
       );
       return;
     }
@@ -1975,9 +1994,13 @@ export default function DirectorConsolePage() {
 
       const duplicateMatch = (
         (possibleDuplicates ?? []) as IssueRecord[]
-      ).find((issue) =>
-        findMatchingCueEntry(cueValue, issue.cue_value),
-      );
+      ).find((issue) => {
+        if (cueIsRequired) {
+          return findMatchingCueEntry(cueValue, issue.cue_value);
+        }
+
+        return issue.issue_type === issueType;
+      });
 
       if (duplicateMatch) {
         const { data: assignmentData, error: assignmentError } =
@@ -1998,9 +2021,10 @@ export default function DirectorConsolePage() {
 
         setDuplicateIssue({
           issue: duplicateMatch,
-          matchedCue:
-            findMatchingCueEntry(cueValue, duplicateMatch.cue_value) ??
-            cueValue.trim(),
+          matchedCue: cueIsRequired
+            ? findMatchingCueEntry(cueValue, duplicateMatch.cue_value) ??
+              cueValue.trim()
+            : null,
           technicianName:
             (assignmentData as { technician_name?: string } | null)
               ?.technician_name ??
@@ -2015,14 +2039,19 @@ export default function DirectorConsolePage() {
 
     let scriptRowForSubmission = resolvedScriptRow;
 
-    if (hasParsedScript && !cueIsRange) {
-      const { data: scriptEvent, error: scriptEventError } =
-        await findScriptEvent(
-          supabase,
-          activeShow.id,
-          Number(channelNumber),
-          cueValue,
-        );
+    if (hasParsedScript && (!cueIsRequired || !cueIsRange)) {
+      const { data: scriptEvent, error: scriptEventError } = cueIsRequired
+        ? await findScriptEvent(
+            supabase,
+            activeShow.id,
+            Number(channelNumber),
+            cueValue,
+          )
+        : await findFirstScriptEventForChannel(
+            supabase,
+            activeShow.id,
+            Number(channelNumber),
+          );
 
       if (scriptEventError) {
         setErrorMessage(
@@ -2055,7 +2084,7 @@ export default function DirectorConsolePage() {
       assigned_to_user_id: null,
       channel_number: Number(channelNumber),
       created_by_user_id: null,
-      cue_value: cueValue.trim(),
+      cue_value: cueIsRequired ? cueValue.trim() : "",
       director_note: directorNote.trim() || null,
       effect_name: submittedEffectName,
       issue_source: "manual_director_entry",
@@ -2075,7 +2104,7 @@ export default function DirectorConsolePage() {
     } else {
       setCreatedIssue({
         channelNumber: Number(channelNumber),
-        cueValue: cueValue.trim(),
+        cueValue: cueIsRequired ? cueValue.trim() : "",
         issueType,
       });
       setChannelNumber("");
@@ -2538,12 +2567,43 @@ export default function DirectorConsolePage() {
                   !hasParsedScript &&
                   (isManual || showPositions.positions.length > 0)
                     ? "sm:grid-cols-2 xl:grid-cols-4"
-                    : "sm:grid-cols-3"
+                    : cueIsRequired
+                      ? "sm:grid-cols-3"
+                      : "sm:grid-cols-2"
                 }`}
               >
                 <label className="flex flex-col gap-2">
                   <span className="text-sm font-semibold text-[#dbe4ef]">
-                    Channel Number
+                    Issue Type
+                  </span>
+                  <select
+                    className={fieldClassName}
+                    onChange={(event) => {
+                      const nextIssueType = event.target.value as IssueType;
+
+                      setIssueType(nextIssueType);
+
+                      if (!issueUsesCue(nextIssueType)) {
+                        setCueValue("");
+                      }
+                    }}
+                    value={issueType}
+                  >
+                    <option value="" disabled>
+                      Select issue type
+                    </option>
+                    <option value="no_continuity">No Continuity</option>
+                    <option value="unexpected_continuity">
+                      Unexpected Continuity
+                    </option>
+                    <option value="module_offline">Module Offline</option>
+                    <option value="low_battery">Low Battery</option>
+                    <option value="poor_signal">Poor Signal</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-semibold text-[#dbe4ef]">
+                    Channel
                   </span>
                   <input
                     className={fieldClassName}
@@ -2555,18 +2615,20 @@ export default function DirectorConsolePage() {
                     value={channelNumber}
                   />
                 </label>
-                <label className="flex flex-col gap-2">
-                  <span className="text-sm font-semibold text-[#dbe4ef]">
-                    Cue(s)
-                  </span>
-                  <input
-                    className={fieldClassName}
-                    onChange={(event) => setCueValue(event.target.value)}
-                    placeholder="Required"
-                    type="text"
-                    value={cueValue}
-                  />
-                </label>
+                {cueIsRequired ? (
+                  <label className="flex flex-col gap-2">
+                    <span className="text-sm font-semibold text-[#dbe4ef]">
+                      Cue(s)
+                    </span>
+                    <input
+                      className={fieldClassName}
+                      onChange={(event) => setCueValue(event.target.value)}
+                      placeholder="Required"
+                      type="text"
+                      value={cueValue}
+                    />
+                  </label>
+                ) : null}
                 {!hasParsedScript && showPositions.positions.length > 0 ? (
                   <label className="flex flex-col gap-2">
                     <span className="text-sm font-semibold text-[#dbe4ef]">
@@ -2605,27 +2667,6 @@ export default function DirectorConsolePage() {
                     />
                   </label>
                 ) : null}
-                <label className="flex flex-col gap-2">
-                  <span className="text-sm font-semibold text-[#dbe4ef]">
-                    Issue Type
-                  </span>
-                  <select
-                    className={fieldClassName}
-                    onChange={(event) =>
-                      setIssueType(event.target.value as IssueType)
-                    }
-                    value={issueType}
-                  >
-                    <option value="" disabled>
-                      Select issue type
-                    </option>
-                    <option value="no_continuity">No Continuity</option>
-                    <option value="unexpected_continuity">
-                      Unexpected Continuity
-                    </option>
-                    <option value="module_offline">Module Offline</option>
-                  </select>
-                </label>
               </div>
 
               <div className="grid gap-3">
@@ -2659,7 +2700,7 @@ export default function DirectorConsolePage() {
                 </div>
               </div>
 
-              {hasParsedScript && channelNumber && cueValue.trim() ? (
+              {hasParsedScript && channelNumber && issueType && (!cueIsRequired || cueValue.trim()) ? (
                 cueIsRange ? (
                   <p className="rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-sm font-semibold text-[#fde68a]">
                     Script lookup supports single cues only for MVP.
@@ -2695,8 +2736,8 @@ export default function DirectorConsolePage() {
                   </div>
                 ) : scriptLookupState === "not_found" ? (
                   <p className="rounded-lg border border-[#f59e0b]/40 bg-[#2a1c06] p-3 text-sm font-semibold text-[#fde68a]">
-                    No matching script row found for CH {channelNumber} Cue{" "}
-                    {cueValue.trim()}.
+                    No matching script row found for CH {channelNumber}
+                    {cueIsRequired ? ` Cue ${cueValue.trim()}` : ""}.
                   </p>
                 ) : null
               ) : null}
@@ -2861,7 +2902,7 @@ export default function DirectorConsolePage() {
                                 <span className="flex shrink-0 items-center gap-2">
                                   {status === "new" ? (
                                     <select
-                                      aria-label={`Assign technician to channel ${issue.channel_number}, cue ${issue.cue_value}`}
+                                      aria-label={`Assign technician to ${formatIssueLabel(issue.issue_type)} on channel ${issue.channel_number}`}
                                       className="h-8 max-w-32 shrink-0 rounded-md border border-[#8b5cf6]/40 bg-[#130a2b] px-2 text-xs font-semibold text-white outline-none focus:border-[#a78bfa]"
                                       disabled={assigningIssueId === issue.id}
                                       onChange={(event) => {
@@ -2892,7 +2933,7 @@ export default function DirectorConsolePage() {
                                   ) : technicianAssignments[issue.id] &&
                                     !terminalStatuses.has(status) ? (
                                     <select
-                                      aria-label={`Reassign channel ${issue.channel_number}, cue ${issue.cue_value}`}
+                                      aria-label={`Reassign ${formatIssueLabel(issue.issue_type)} on channel ${issue.channel_number}`}
                                       className="h-8 max-w-32 shrink-0 rounded-md border border-[#3b82f6]/40 bg-[#0b1b35] px-2 text-xs font-semibold text-white outline-none focus:border-[#60a5fa]"
                                       disabled={
                                         reassigningIssueId === issue.id
@@ -3036,14 +3077,17 @@ export default function DirectorConsolePage() {
               Issue Already Exists
             </h2>
             <p className="mt-4 text-base font-semibold text-[#fde68a]">
-              CH {duplicateIssue.issue.channel_number} | Cue{" "}
-              {duplicateIssue.matchedCue}
+              <IssueIdentifiers
+                channelNumber={duplicateIssue.issue.channel_number}
+                cueValue={duplicateIssue.matchedCue}
+                issueType={duplicateIssue.issue.issue_type}
+              />
             </p>
             <dl className="mt-4 divide-y divide-white/10 text-sm">
               <div className="grid grid-cols-[7.5rem_1fr] gap-3 py-2">
                 <dt className="text-[#94a3b8]">Position:</dt>
                 <dd className="font-semibold text-white">
-                  {duplicateIssue.issue.position_name ?? "—"}
+                  {duplicateIssue.issue.position_name ?? "None"}
                 </dd>
               </div>
               <div className="grid grid-cols-[7.5rem_1fr] gap-3 py-2">
@@ -3162,18 +3206,13 @@ export default function DirectorConsolePage() {
               Reopen Issue?
             </h2>
             <p className="mt-4 text-sm leading-6 text-[#dbe4ef]">
-              Reopen <strong className="font-bold text-white">CH</strong>{" "}
-              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
-                {reopenTarget.channel_number}
-              </strong>{" "}
-              <span className="text-[#94a3b8]">|</span>{" "}
-              <strong className="font-bold text-white">Cue(s)</strong>{" "}
-              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
-                {reopenTarget.cue_value}
-              </strong>{" "}
-              at{" "}
+              Reopen <IssueIdentifiers
+                channelNumber={reopenTarget.channel_number}
+                cueValue={reopenTarget.cue_value}
+                issueType={reopenTarget.issue_type}
+              /> at{" "}
               <strong className="font-bold text-[#4ade80]">
-                {reopenTarget.position_name ?? "—"}
+                {reopenTarget.position_name ?? "None"}
               </strong>
               {"? This will return the issue to active work."}
             </p>
@@ -3595,7 +3634,7 @@ function TechOverviewCard({
             title={`Open actions for ${technicianName}`}
             type="button"
           >
-            ⋯
+            More
           </button>
         </div>
       </div>
@@ -3608,20 +3647,16 @@ function TechOverviewCard({
         <div className="mt-3 grid gap-1 border-t border-white/10 pt-2">
           <p className="truncate text-xs text-[#dbe4ef]">
             <span className="text-[#94a3b8]">Currently Working: </span>
-            CH{" "}
-            <strong className="text-[#f28b82]">
-              {currentIssue.issue.channel_number}
-            </strong>
-            <span className="text-[#64748b]"> | </span>
-            Cue(s){" "}
-            <strong className="text-[#f28b82]">
-              {currentIssue.issue.cue_value}
-            </strong>
+            <IssueIdentifiers
+              channelNumber={currentIssue.issue.channel_number}
+              cueValue={currentIssue.issue.cue_value}
+              issueType={currentIssue.issue.issue_type}
+            />
           </p>
           <p className="truncate text-xs text-[#dbe4ef]">
             <span className="text-[#94a3b8]">Location: </span>
             <strong className="text-[#f28b82]">
-              {currentIssue.issue.position_name ?? "—"}
+              {currentIssue.issue.position_name ?? "None"}
             </strong>
           </p>
           <p className="font-mono text-xs font-semibold text-[#cbd5e1]">
@@ -3636,10 +3671,20 @@ function TechOverviewCard({
           </p>
           <p className="text-[#dbe4ef]">
             <span className="text-[#94a3b8]">Location: </span>
-            <strong className="text-[#f28b82]">—</strong>
+            <strong className="text-[#f28b82]">None</strong>
           </p>
         </div>
       )}
     </Link>
   );
 }
+
+
+
+
+
+
+
+
+
+

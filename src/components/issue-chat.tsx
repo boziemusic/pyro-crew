@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   type FormEvent,
@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { IssueIdentifiers } from "@/components/issue-identifiers";
 import { getTemporaryTechnicianLabel } from "./temporary-technician-store";
 import { playChatMessage } from "@/lib/app-feedback";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
@@ -35,6 +36,7 @@ export type IssueChatTarget = {
   channelNumber: number;
   cueValue: string;
   id: string;
+  issueType: string;
   positionName: string | null;
 };
 
@@ -501,7 +503,7 @@ export function IssueChatButton({
       title="Issue chat"
       type="button"
     >
-      <span aria-hidden="true">💬</span>
+      <span aria-hidden="true" className="text-[10px] font-black uppercase tracking-[0.08em]">Chat</span>
       {unreadCount > 0 ? (
         <span className="absolute -right-2 -top-2 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[#ef4444] px-1 text-[10px] font-bold text-white shadow-lg">
           {unreadCount > 99 ? "99+" : unreadCount}
@@ -562,10 +564,14 @@ export function IssueChatWindow({
               className="mt-1 text-sm font-semibold text-white"
               id="issue-chat-title"
             >
-              CH {target.channelNumber} | Cue(s) {target.cueValue}
+              <IssueIdentifiers
+                channelNumber={target.channelNumber}
+                cueValue={target.cueValue}
+                issueType={target.issueType}
+              />
             </h2>
             <p className="mt-1 text-xs text-[#94a3b8]">
-              Position: {target.positionName ?? "—"}
+              Position: {target.positionName ?? "None"}
             </p>
           </div>
           <button
@@ -677,3 +683,5 @@ export function IssueChatWindow({
     </div>
   );
 }
+
+

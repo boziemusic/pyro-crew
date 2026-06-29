@@ -466,7 +466,7 @@ export function DirectChatButton({
       title="Direct message"
       type="button"
     >
-      <span aria-hidden="true">💬</span>
+      <span aria-hidden="true" className="text-[10px] font-black uppercase tracking-[0.08em]">DM</span>
       {unreadCount > 0 ? (
         <span className="absolute -right-2 -top-2 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[#ef4444] px-1 text-[10px] font-bold text-white shadow-lg">
           {unreadCount > 99 ? "99+" : unreadCount}

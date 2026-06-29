@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -21,7 +21,6 @@ import {
   formatIssueLabel,
   getIssueStatusClassName,
   IssueIdentifiers,
-  ISSUE_IDENTIFIER_VALUE_CLASS_NAME,
 } from "@/components/issue-identifiers";
 import {
   getTemporaryTechnicianLabel,
@@ -315,7 +314,7 @@ function getTimestampValue(value: string | null | undefined) {
 
 function formatScoreboardDuration(value: number | null) {
   if (!value || value <= 0) {
-    return "—";
+    return "None";
   }
 
   const totalSeconds = Math.round(value / 1000);
@@ -1498,6 +1497,7 @@ export default function TechnicianConsolePage() {
     ? {
         channelNumber: workingIssues[0].channel_number,
         cueValue: workingIssues[0].cue_value,
+        issueType: workingIssues[0].issue_type,
         positionName: workingIssues[0].position_name,
       }
     : null;
@@ -2475,7 +2475,7 @@ export default function TechnicianConsolePage() {
             activeSession.show_id === activeShow?.id
               ? activeSession.name
               : "No active session"}
-            {" · "}
+            {" - "}
             {getTemporaryTechnicianLabel(selectedTechnician)}
           </p>
         </div>
@@ -2556,7 +2556,7 @@ export default function TechnicianConsolePage() {
                 type="button"
               >
                 {isManuallyRefreshing
-                  ? "Refreshing…"
+                  ? "Refreshing..."
                   : "Refresh Console"}
               </button>
               <button
@@ -3181,15 +3181,11 @@ export default function TechnicianConsolePage() {
               </div>
             ) : null}
             <p className="mt-4 text-base leading-7 text-[#dbe4ef]">
-              Issue CH{" "}
-              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
-                {directorReturnPopup.issue.channel_number}
-              </strong>
-              <span className="text-[#64748b]"> | </span>
-              Cue(s){" "}
-              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
-                {directorReturnPopup.issue.cue_value}
-              </strong>
+              Issue <IssueIdentifiers
+                channelNumber={directorReturnPopup.issue.channel_number}
+                cueValue={directorReturnPopup.issue.cue_value}
+                issueType={directorReturnPopup.issue.issue_type}
+              />
             </p>
             {directorReturnPopup.issue.position_name ? (
               <p className="mt-2 text-base leading-7 text-[#dbe4ef]">
@@ -3508,3 +3504,8 @@ export default function TechnicianConsolePage() {
     </div>
   );
 }
+
+
+
+
+

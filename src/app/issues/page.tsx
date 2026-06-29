@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import {
@@ -11,7 +11,6 @@ import {
 import { useActiveShow } from "@/components/active-show-strip";
 import {
   formatIssueLabel,
-  ISSUE_IDENTIFIER_VALUE_CLASS_NAME,
   IssueIdentifiers,
 } from "@/components/issue-identifiers";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
@@ -329,18 +328,13 @@ export default function IssuesPage() {
               Reopen Issue?
             </h2>
             <p className="mt-4 text-sm leading-6 text-[#dbe4ef]">
-              Reopen <strong className="font-bold text-white">CH</strong>{" "}
-              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
-                {reopenTarget.channel_number}
-              </strong>{" "}
-              <span className="text-[#94a3b8]">|</span>{" "}
-              <strong className="font-bold text-white">Cue(s)</strong>{" "}
-              <strong className={ISSUE_IDENTIFIER_VALUE_CLASS_NAME}>
-                {reopenTarget.cue_value}
-              </strong>{" "}
-              at{" "}
+              Reopen <IssueIdentifiers
+                channelNumber={reopenTarget.channel_number}
+                cueValue={reopenTarget.cue_value}
+                issueType={reopenTarget.issue_type}
+              /> at{" "}
               <strong className="font-bold text-[#4ade80]">
-                {reopenTarget.position_name ?? "—"}
+                {reopenTarget.position_name ?? "None"}
               </strong>
               {"? This will return the issue to active work."}
             </p>
@@ -368,3 +362,6 @@ export default function IssuesPage() {
     </div>
   );
 }
+
+
+

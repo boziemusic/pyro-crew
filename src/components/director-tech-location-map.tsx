@@ -1,9 +1,12 @@
-"use client";
+﻿"use client";
 
 import { useEffect } from "react";
 import Link from "next/link";
 import { useFieldMap } from "@/components/field-map-store";
-import { formatIssueLabel } from "@/components/issue-identifiers";
+import {
+  formatIssueLabel,
+  IssueIdentifiers,
+} from "@/components/issue-identifiers";
 import { useShowPositions } from "@/components/position-store";
 import {
   getTechnicianInitials,
@@ -337,21 +340,17 @@ export function DirectorTechLocationMap({
                                 ? "Last Location: "
                                 : "Location: "}
                             </span>
-                            <strong>{location.positionName ?? "—"}</strong>
+                            <strong>{location.positionName ?? "None"}</strong>
                           </p>
                           {location.status !== "last-known" &&
                           location.channelNumber !== null &&
-                          location.cueValue ? (
+                          location.issueType ? (
                             <p>
-                              CH{" "}
-                              <strong className="text-[#f28b82]">
-                                {location.channelNumber}
-                              </strong>
-                              <span className="text-[#64748b]"> | </span>
-                              Cue(s){" "}
-                              <strong className="text-[#f28b82]">
-                                {location.cueValue}
-                              </strong>
+                              <IssueIdentifiers
+                                channelNumber={location.channelNumber}
+                                cueValue={location.cueValue}
+                                issueType={location.issueType}
+                              />
                             </p>
                           ) : null}
                           {location.status !== "last-known" &&
@@ -457,17 +456,13 @@ export function DirectorTechLocationMap({
                       )}
                       {location.status !== "last-known" &&
                       location.channelNumber !== null &&
-                      location.cueValue ? (
+                      location.issueType ? (
                         <p className="text-[#dbe4ef]">
-                          CH{" "}
-                          <strong className="text-[#f28b82]">
-                            {location.channelNumber}
-                          </strong>
-                          <span className="text-[#64748b]"> | </span>
-                          Cue(s){" "}
-                          <strong className="text-[#f28b82]">
-                            {location.cueValue}
-                          </strong>
+                          <IssueIdentifiers
+                            channelNumber={location.channelNumber}
+                            cueValue={location.cueValue}
+                            issueType={location.issueType}
+                          />
                         </p>
                       ) : null}
                       {location.status !== "last-known" &&
@@ -499,3 +494,5 @@ export function DirectorTechLocationMap({
     </div>
   );
 }
+
+
