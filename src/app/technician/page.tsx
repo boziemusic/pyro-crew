@@ -51,6 +51,7 @@ import {
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { REOPEN_ISSUE_HISTORY_NOTE } from "@/lib/reopen-issue";
 import { TechnicianMapAssist } from "@/components/technician-map-assist";
+import { PwaStatusLine } from "@/components/pwa-status-line";
 import { MobileTechnicianAlertToggle } from "@/components/app-feedback-controls";
 import { useIsMobileDevice } from "@/components/mobile-device";
 import {
@@ -2569,6 +2570,7 @@ export default function TechnicianConsolePage() {
               >
                 Clear Active Show
               </button>
+              <PwaStatusLine />
             </div>
           ) : null}
           </div>
