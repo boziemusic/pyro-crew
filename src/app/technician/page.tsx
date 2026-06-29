@@ -1,8 +1,9 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -777,6 +778,7 @@ export default function TechnicianConsolePage() {
   );
   const [mapAssistIssue, setMapAssistIssue] =
     useState<TechnicianIssue | null>(null);
+  const [isFieldMapOpen, setIsFieldMapOpen] = useState(false);
   const [, setQueryDiagnostics] = useState(
     initialQueryDiagnostics,
   );
@@ -2138,6 +2140,7 @@ export default function TechnicianConsolePage() {
                     status: "loading",
                     error: null,
                   });
+                  setIsFieldMapOpen(false);
                   setMapAssistIssue(issue);
                 }}
                 type="button"
@@ -2572,17 +2575,18 @@ export default function TechnicianConsolePage() {
         </div>
       </header>
 
-      {activeShow && mapAssistIssue?.position_name ? (
+      {activeShow && (isFieldMapOpen || mapAssistIssue?.position_name) ? (
         <TechnicianMapAssist
           onDataState={updateMapAssistDiagnostic}
           onClose={() => {
+            setIsFieldMapOpen(false);
             setMapAssistIssue(null);
             updateQueryDiagnostic("map assist data", {
               status: "idle",
               error: null,
             });
           }}
-          positionName={mapAssistIssue.position_name}
+          positionName={mapAssistIssue?.position_name ?? null}
           showId={activeShow.id}
         />
       ) : null}
@@ -3001,7 +3005,7 @@ export default function TechnicianConsolePage() {
 
       <nav
         aria-label="Technician queue sections"
-        className={`${isMobileDevice ? "grid" : "hidden"} fixed inset-x-0 bottom-0 z-50 grid-cols-4 border-t border-white/10 bg-[#070b18]/98 px-1 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_30px_rgba(0,0,0,0.45)] backdrop-blur`}
+        className={`${isMobileDevice ? "flex" : "hidden"} fixed inset-x-0 bottom-0 z-50 flex-nowrap items-stretch gap-1 border-t border-white/10 bg-[#070b18]/98 px-1 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_30px_rgba(0,0,0,0.45)] backdrop-blur`}
       >
         {(
           [
@@ -3035,7 +3039,7 @@ export default function TechnicianConsolePage() {
             },
             {
               id: "awaiting-director" as const,
-              label: "Awaiting Director",
+              label: "Awaiting",
               count: awaitingDirectorIssues.length,
               icon: (
                 <path
@@ -3049,7 +3053,7 @@ export default function TechnicianConsolePage() {
             },
             {
               id: "resolutions" as const,
-              label: "Resolution Notices",
+              label: "Resolutions",
               count: resolutionNotices.length,
               icon: (
                 <path
@@ -3065,7 +3069,7 @@ export default function TechnicianConsolePage() {
             id: MobileSection;
             label: string;
             count: number;
-            icon: React.ReactNode;
+            icon: ReactNode;
           }[]
         ).map((item) => {
           const isActive = mobileSection === item.id;
@@ -3074,7 +3078,7 @@ export default function TechnicianConsolePage() {
           return (
             <button
               aria-current={isActive ? "page" : undefined}
-              className={`relative flex min-h-16 touch-manipulation flex-col items-center justify-center gap-1 rounded-lg px-0.5 text-[10px] font-semibold leading-tight transition ${
+              className={`relative flex min-h-16 min-w-0 flex-1 touch-manipulation flex-col items-center justify-center gap-1 rounded-lg px-0.5 text-[10px] font-semibold leading-tight transition ${
                 isActive
                   ? "bg-[#4c00a4]/35 text-white shadow-inner shadow-[#8b5cf6]/20"
                   : "text-[#94a3b8] active:bg-white/10"
@@ -3104,10 +3108,45 @@ export default function TechnicianConsolePage() {
                   </span>
                 ) : null}
               </span>
-              <span className="max-w-full text-center">{item.label}</span>
+              <span className="max-w-full truncate text-center">{item.label}</span>
             </button>
           );
         })}
+        <button
+          aria-current={isFieldMapOpen ? "page" : undefined}
+          className={
+            isFieldMapOpen
+              ? "relative flex min-h-16 min-w-0 flex-1 touch-manipulation flex-col items-center justify-center gap-1 rounded-lg bg-[#4c00a4]/35 px-0.5 text-[10px] font-semibold leading-tight text-white shadow-inner shadow-[#8b5cf6]/20 transition"
+              : "relative flex min-h-16 min-w-0 flex-1 touch-manipulation flex-col items-center justify-center gap-1 rounded-lg px-0.5 text-[10px] font-semibold leading-tight text-[#94a3b8] transition active:bg-white/10"
+          }
+          onClick={() => {
+            updateQueryDiagnostic("map assist data", {
+              status: "loading",
+              error: null,
+            });
+            setMapAssistIssue(null);
+            setIsFieldMapOpen(true);
+          }}
+          type="button"
+        >
+          <span className="relative">
+            <svg
+              aria-hidden="true"
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <path
+                d="m9 18-6 3V6l6-3 6 3 6-3v15l-6 3-6-3ZM9 3v15M15 6v15"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.8"
+              />
+            </svg>
+          </span>
+          <span className="max-w-full truncate text-center">Map</span>
+        </button>
       </nav>
 
       {removedSessionNotice ? (

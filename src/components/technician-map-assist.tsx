@@ -7,7 +7,7 @@ import { useShowPositions } from "@/components/position-store";
 export function TechnicianMapAssist({
   onDataState,
   onClose,
-  positionName,
+  positionName = null,
   showId,
 }: {
   onDataState?: (
@@ -15,16 +15,21 @@ export function TechnicianMapAssist({
     error: string | null,
   ) => void;
   onClose: () => void;
-  positionName: string;
+  positionName?: string | null;
   showId: string;
 }) {
   const fieldMap = useFieldMap(showId);
   const showPositions = useShowPositions(showId);
-  const normalizedPositionName = positionName.trim().toLocaleLowerCase();
-  const position = showPositions.positions.find(
-    (candidate) =>
-      candidate.name.trim().toLocaleLowerCase() === normalizedPositionName,
-  );
+  const normalizedPositionName = positionName
+    ? positionName.trim().toLocaleLowerCase()
+    : null;
+  const position = normalizedPositionName
+    ? showPositions.positions.find(
+        (candidate) =>
+          candidate.name.trim().toLocaleLowerCase() ===
+          normalizedPositionName,
+      )
+    : null;
   const directMarker = position
     ? fieldMap.markers.find(
         (marker) =>
@@ -37,11 +42,13 @@ export function TechnicianMapAssist({
     ? showPositions.groups.find(
         (candidate) => candidate.id === position.groupId,
       )
-    : showPositions.groups.find(
-        (candidate) =>
-          candidate.name.trim().toLocaleLowerCase() ===
-          normalizedPositionName,
-      );
+    : normalizedPositionName
+      ? showPositions.groups.find(
+          (candidate) =>
+            candidate.name.trim().toLocaleLowerCase() ===
+            normalizedPositionName,
+        )
+      : null;
   const groupMarker =
     !directMarker && group
       ? fieldMap.markers.find(
@@ -99,7 +106,7 @@ export function TechnicianMapAssist({
 
   return (
     <div
-      aria-label={`Map assist for ${positionName}`}
+      aria-label={positionName ? `Map assist for ${positionName}` : "Field map"}
       aria-modal="true"
       className="technician-map-assist-overlay fixed inset-0 z-[100] flex items-center justify-center bg-[#020617] p-0 backdrop-blur-sm md:bg-[#020617]/85 md:p-6"
       onMouseDown={(event) => {
@@ -113,10 +120,10 @@ export function TechnicianMapAssist({
         <header className="technician-map-assist-header flex shrink-0 items-start justify-between gap-3 border-b border-white/10 px-3 py-2 md:px-5 md:py-4">
           <div className="technician-map-assist-title">
             <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#a78bfa] md:text-xs">
-              Technician Map Assist
+              {positionName ? "Technician Map Assist" : "Technician Field Map"}
             </p>
             <h2 className="mt-0.5 text-sm font-semibold text-white md:mt-1 md:text-lg">
-              {positionName}
+              {positionName ?? "Field Map"}
             </h2>
             {targetMarker ? (
               <p className="mt-0.5 hidden text-xs text-[#94a3b8] md:block">
@@ -212,7 +219,7 @@ export function TechnicianMapAssist({
                 ) : null}
               </div>
 
-              {!targetMarker ? (
+              {positionName && !targetMarker ? (
                 <p className="mt-3 rounded-md border border-white/10 bg-[#070b18] px-4 py-3 text-center text-sm font-semibold text-[#cbd5e1]">
                   No map marker found for this issue position.
                 </p>
